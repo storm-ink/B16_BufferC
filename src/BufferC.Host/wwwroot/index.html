@@ -2,86 +2,257 @@
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
-<title>BufferC 界面</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BufferC 缓冲库监控界面</title>
 <style>
-  body { font-family: "Microsoft YaHei", sans-serif; margin: 12px; background: #f5f6f8; }
-  h1 { font-size: 18px; margin: 4px 0; }
-  #statusbar { display: flex; gap: 16px; font-size: 13px; margin: 8px 0; }
-  .badge { padding: 2px 10px; border-radius: 10px; color: #fff; font-size: 12px; }
-  .ok { background: #2e7d32; } .warn { background: #e65100; } .off { background: #757575; }
-  .plc { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 8px; margin: 8px 0; }
-  .plc h2 { font-size: 14px; margin: 2px 0 6px; }
-  .grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; }
-  .cell { border-radius: 4px; padding: 4px 6px; font-size: 11px; min-height: 34px; color: #fff; }
-  .st0 { background: #bdbdbd; } .st1 { background: #2e7d32; } .st2 { background: #1565c0; }
-  .st3 { background: #6a1b9a; } .st4 { background: #c62828; } .st99 { background: #37474f; }
-  .alarm-flag { background: #ffeb3b; color: #000; border-radius: 3px; padding: 0 3px; font-size: 10px; }
-  table { border-collapse: collapse; width: 100%; background: #fff; font-size: 13px; }
-  th, td { border: 1px solid #ddd; padding: 4px 8px; text-align: left; }
-  .cmd { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 8px; margin: 8px 0; }
-  .cmd input, .cmd select, .cmd button { margin-right: 6px; padding: 4px 8px; }
-  .msg { margin-top: 6px; font-size: 12px; color: #1565c0; }
+  :root { --ok:#2e7d32; --warn:#e65100; --err:#c62828; --blue:#1565c0; --purple:#6a1b9a; --gray:#9e9e9e; }
+  * { box-sizing: border-box; }
+  body { font-family: "Microsoft YaHei", sans-serif; margin: 10px; background: #f0f2f5; color: #222; font-size: 13px; }
+  h1 { font-size: 16px; margin: 2px 0; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: center; background: #fff; border: 1px solid #ddd;
+         border-radius: 6px; padding: 6px 12px; margin: 6px 0; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 9px; color: #fff; font-size: 12px; }
+  .b-ok { background: var(--ok); } .b-warn { background: var(--warn); } .b-err { background: var(--err); } .b-off { background: #757575; }
+  .kv b { color: #333; } .kv { white-space: nowrap; }
+  .card { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 8px; margin: 6px 0; }
+  .card h2 { font-size: 14px; margin: 2px 0 6px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 3px; }
+  .cell { border-radius: 4px; padding: 3px 5px; font-size: 11px; min-height: 36px; color: #fff; position: relative; }
+  .st0 { background: #bdbdbd; } .st1 { background: var(--ok); } .st2 { background: var(--blue); }
+  .st3 { background: var(--purple); } .st4 { background: var(--err); } .st99 { background: #37474f; }
+  .offline-mark { position: absolute; top: 1px; right: 3px; font-size: 9px; background: #0008; border-radius: 3px; padding: 0 3px; }
+  .trunc { background: #ffeb3b; color: #000; border-radius: 3px; padding: 0 3px; font-size: 9px; }
+  .stat-line { font-size: 11px; color: #555; margin: 4px 0; }
+  details { margin-top: 4px; } summary { cursor: pointer; font-size: 12px; color: #1565c0; }
+  .reg-table { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 4px; }
+  .reg-table th, .reg-table td { border: 1px solid #ddd; padding: 2px 5px; text-align: left; }
+  .reg-table th { background: #f5f5f5; }
+  .tabbar button { padding: 4px 14px; margin-right: 4px; border: 1px solid #bbb; background: #eee; border-radius: 4px 4px 0 0; cursor: pointer; }
+  .tabbar button.active { background: #fff; border-bottom: 2px solid var(--blue); font-weight: bold; }
+  .tabpanel { display: none; } .tabpanel.active { display: block; }
+  table.list { border-collapse: collapse; width: 100%; background: #fff; font-size: 12px; }
+  table.list th, table.list td { border: 1px solid #ddd; padding: 3px 7px; text-align: left; }
+  table.list th { background: #f5f5f5; }
+  .ok-txt { color: var(--ok); } .fail-txt { color: var(--err); }
+  .cmd { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .cmd input, .cmd select, .cmd button { padding: 5px 9px; font-size: 13px; }
+  .logs { background: #1e1e1e; color: #d4d4d4; font-family: Consolas, monospace; font-size: 11px;
+          max-height: 260px; overflow-y: auto; padding: 6px 8px; border-radius: 4px; margin-top: 6px; }
+  .logs .t { color: #808080; } .logs .c { color: #569cd6; }
+  .logs .l-cmd { color: #c586c0; } .logs .l-err { color: #f44747; } .logs .l-ok { color: #4ec9b0; }
+  .logs .l-frame { color: #9e9e9e; }
+  .log-filter button { margin-right: 4px; padding: 2px 10px; font-size: 12px; }
+  .overlay { position: fixed; inset: 0; background: #0008; display: none; align-items: center; justify-content: center; z-index: 99; }
+  .overlay .box { background: #fff; border-radius: 8px; padding: 18px 24px; max-width: 480px; }
+  .overlay .box p { margin: 8px 0; }
+  .overlay .box button { padding: 6px 18px; margin: 0 6px; }
+  .paused { outline: 2px solid var(--warn); }
 </style>
 </head>
 <body>
-<h1>BufferC 缓冲库界面</h1>
-<div id="statusbar"></div>
+<h1>BufferC 缓冲库监控界面</h1>
+
+<!-- 顶部状态栏 -->
+<div class="bar" id="statusbar">加载中…</div>
+
+<!-- PLC 卡片 -->
 <div id="plcs"></div>
 
-<div class="cmd">
+<!-- 手动命令 -->
+<div class="card">
   <h2>手动命令</h2>
-  <select id="cmdType"><option value="install">安装 (Install)</option><option value="remove">移除 (Remove)</option></select>
-  <input id="loc" placeholder="位置，如 Buffer1_Port3" size="18">
-  <input id="carrierId" placeholder="载具 ID（安装时）" size="20">
-  <button onclick="sendCmd()">执行</button>
-  <span id="cmdMsg" class="msg"></span>
+  <div class="cmd">
+    <select id="cmdType"><option value="install">安装 (Install)</option><option value="remove">移除 (Remove)</option></select>
+    <input id="loc" placeholder="位置，如 Buffer1_Port3" size="16">
+    <input id="carrierId" placeholder="载具 ID（安装时）" size="18">
+    <button onclick="askConfirm()">执行</button>
+    <span id="cmdMsg"></span>
+  </div>
 </div>
 
-<h2>当前告警</h2>
-<table id="alarms"><thead><tr><th>单位</th><th>告警码</th><th>文本</th><th>状态</th><th></th></tr></thead><tbody></tbody></table>
+<!-- 活动面板 -->
+<div class="card">
+  <div class="tabbar">
+    <button class="active" onclick="switchTab('events', this)">事件流</button>
+    <button onclick="switchTab('cmds', this)">命令</button>
+    <button onclick="switchTab('alarmhist', this)">告警历史</button>
+    <button onclick="switchTab('alarms', this)">当前告警</button>
+  </div>
+  <div id="tab-events" class="tabpanel active"><table class="list" id="tbl-events"></table></div>
+  <div id="tab-cmds" class="tabpanel"><table class="list" id="tbl-cmds"></table></div>
+  <div id="tab-alarmhist" class="tabpanel"><table class="list" id="tbl-alarmhist"></table></div>
+  <div id="tab-alarms" class="tabpanel"><table class="list" id="tbl-alarms"></table></div>
+</div>
+
+<!-- 日志面板 -->
+<div class="card">
+  <h2>运行日志 <span style="font-weight:normal;font-size:12px;color:#666" id="logState"></span></h2>
+  <div class="log-filter" id="logFilter">
+    <button onclick="setLogFilter('')">全部</button>
+    <button onclick="setLogFilter('PLC')">PLC</button>
+    <button onclick="setLogFilter('MCS')">MCS 帧</button>
+    <button onclick="setLogFilter('CMD')">命令</button>
+    <button onclick="setLogFilter('告警')">告警</button>
+    <button onclick="setLogFilter('HSMS')">连接</button>
+    <button onclick="toggleLogPause()" id="logPauseBtn">暂停</button>
+  </div>
+  <div class="logs" id="logs"></div>
+</div>
+
+<!-- 二次确认弹窗 -->
+<div class="overlay" id="confirmBox">
+  <div class="box">
+    <h3>确认执行命令</h3>
+    <p id="confirmText"></p>
+    <div style="text-align:center;margin-top:12px">
+      <button onclick="doSendCmd(true)">确认执行</button>
+      <button onclick="doSendCmd(false)">取消</button>
+    </div>
+  </div>
+</div>
 
 <script>
-async function load() {
+const ST = { 0: '空', 1: '有货', 2: '正放', 3: '正取', 4: '故障' };
+let logFilter = '', logPaused = false, pendingCmd = null;
+
+function fmtTime(t) { return t ? new Date(t).toLocaleString('zh-CN', { hour12: false }) : '—'; }
+function fmtDur(ms) { return ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(1) + 's'; }
+function clsForLog(line) {
+  if (line.category === 'CMD' || line.category === 'S2F41') return 'l-cmd';
+  if (line.message.includes('异常') || line.message.includes('失败') || line.message.includes('超时')) return 'l-err';
+  if (line.message.includes('已连接') || line.message.includes('OK')) return 'l-ok';
+  if (line.category === '←MCS' || line.category === '→MCS') return 'l-frame';
+  return '';
+}
+
+async function loadStatus() {
   try {
-    const r = await fetch('/api/status');
-    const s = await r.json();
-    // 状态栏
+    const s = await (await fetch('/api/status')).json();
+    const online = s.plcs.filter(p => p.connected).length;
+    const mcs = s.mcs, sys = s.system;
     document.getElementById('statusbar').innerHTML =
-      `<span>MCS: <span class="badge ${s.hsmsConnected ? 'ok' : 'off'}">${s.hsmsConnected ? 'ONLINE' : 'OFFLINE'}</span></span>` +
-      `<span>SC: AUTO</span><span>告警数: ${s.alarms.length}</span>`;
-    // PLC 网格
+      `<span class="kv">MCS: <b>${s.hsmsConnected ? '<span class="badge b-ok">ONLINE</span>' : '<span class="badge b-off">OFFLINE</span>'}</b>` +
+      (s.hsmsConnected ? ` ${mcs.peerEndpoint || ''} 时长:${fmtDur(Date.now() - new Date(mcs.establishedAt).getTime())} 收:${mcs.messagesIn} 发:${mcs.messagesOut} 发失败:${mcs.sendFail} T3:${mcs.t3Timeout} 对端:${mcs.peerMdln || '—'} ${mcs.peerSoftRev || ''}` : '') + `</span>` +
+      `<span class="kv">PLC: <b>${online}/${s.plcs.length}</b> 在线</span>` +
+      `<span class="kv">告警: <b>${s.alarms.length}</b></span>` +
+      `<span class="kv">运行: <b>${fmtDur(Date.now() - new Date(sys.startedAt).getTime())}</b></span>` +
+      `<span class="kv">版本: <b>${sys.mdln} ${sys.softRev}</b></span>` +
+      `<span class="kv">字节序: <b>${sys.byteOrderSummary || '—'}</b></span>`;
+
     let html = '';
     for (const p of s.plcs) {
-      html += `<div class="plc"><h2>${p.index} 号 Buffer (${p.ip}) ${p.connected ? '' : '<span class="badge off">离线</span>'}</h2><div class="grid">`;
-      for (const st of p.stations) {
-        const cls = 'st' + (st.state === 99 ? 99 : st.state);
-        html += `<div class="cell ${cls}" title="状态${st.state} 告警${st.alarm} 可用${st.avail}">
-          站${st.station}<br>${st.carrierId || '—'}${st.alarm ? ' <span class="alarm-flag">A' + st.alarm + '</span>' : ''}</div>`;
+      const st = p.stats;
+      html += `<div class="card"><h2>${p.index} 号 Buffer <span class="badge ${p.connected ? 'b-ok' : 'b-err'}">${p.connected ? '在线' : '离线'}</span>` +
+        `<span style="font-weight:normal;font-size:12px;color:#666">${p.ip}</span>` +
+        `<span class="stat-line">轮询:${st.pollCount} 错误:${st.errorCount} 重连:${st.reconnectCount} 命令:${st.commandCount}/${st.commandFailCount}败 最后轮询:${fmtTime(st.lastPollAt)}` +
+        (st.lastError ? ` <span class="fail-txt">最后错误:${st.lastError}</span>` : '') + `</span></h2>`;
+      html += `<div class="grid">`;
+      for (const x of p.stations) {
+        const cls = 'st' + (x.state >= 5 ? 99 : x.state);
+        html += `<div class="cell ${cls}" title="站${x.station} 状态${x.state}(${ST[x.state] ?? '?'}) 告警码${x.alarm} 可用${x.avail ? '下线' : '在线'} 安装:${x.installTime || '—'}">
+          站${x.station}<br>${x.carrierId ? x.carrierId : '—'}${x.truncated ? ' <span class="trunc">截断</span>' : ''}${x.alarm ? ' <span style="background:#ffeb3b;color:#000;border-radius:3px;padding:0 3px">A' + x.alarm + '</span>' : ''}${x.avail ? '<span class="offline-mark">下线</span>' : ''}</div>`;
       }
-      html += '</div></div>';
+      html += `</div>`;
+      const r = p.registers;
+      html += `<details><summary>寄存器视图（读区 0~49 + 306~340，字节序 ${r.byteOrder}）</summary>
+        <table class="reg-table"><tr><th>地址</th><th>值</th><th>含义</th></tr>
+        <tr><td>0</td><td>${r.bufferNo}</td><td>Buffer 编号</td></tr>
+        <tr><td>1</td><td>${r.alarmSummary}</td><td>告警汇总</td></tr>
+        ${r.echoStation.map((v, i) => `<tr><td>${2 + i}</td><td>${p.stations[i].state}</td><td>站口${i + 1} 状态</td></tr>`).join('')}
+        ${p.stations.map((x, i) => `<tr><td>${18 + i}</td><td>${x.alarm}</td><td>站口${i + 1} 告警码</td></tr>`).join('')}
+        ${p.stations.map((x, i) => `<tr><td>${34 + i}</td><td>${x.avail}</td><td>站口${i + 1} 可用(0=在线 1=下线)</td></tr>`).join('')}
+        <tr><td>306</td><td>${r.echoNo}</td><td>命令编号回显</td></tr>
+        ${r.echoStation.map((v, i) => `<tr><td>${307 + i}</td><td>${v}</td><td>站口${i + 1} 命令回显</td></tr>`).join('')}
+        <tr><td>323</td><td>${r.scanStation}</td><td>扫码站口号</td></tr>
+        <tr><td>324~339</td><td>${r.scanCode || '—'}</td><td>货物扫码号</td></tr>
+        <tr><td>340</td><td>${r.handshake}</td><td>握手(1=PLC请求 0=已应答)</td></tr>
+        </table></details>`;
+      html += `</div>`;
     }
     document.getElementById('plcs').innerHTML = html;
-    // 告警表
-    const ar = await fetch('/api/alarms');
-    const alarms = await ar.json();
-    document.getElementById('alarms').querySelector('tbody').innerHTML = alarms.map(a =>
-      `<tr><td>${a.unitId}</td><td>${a.alarmId}</td><td>${a.alarmText}</td><td>${a.acked ? '已确认' : '未确认'}</td>` +
-      `<td>${a.acked ? '' : `<button onclick="ack(${a.alarmId})">确认</button>`}</td></tr>`).join('');
-  } catch (e) { document.getElementById('statusbar').innerHTML = '<span class="warn">加载失败: ' + e + '</span>'; }
+  } catch (e) {
+    document.getElementById('statusbar').innerHTML = `<span class="badge b-err">加载失败: ${e}</span>`;
+  }
 }
-async function sendCmd() {
-  const body = { cmd: document.getElementById('cmdType').value,
-                 carrierId: document.getElementById('carrierId').value,
-                 carrierLoc: document.getElementById('loc').value };
-  const r = await fetch('/api/command', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+
+async function loadActivity() {
+  try {
+    const [ev, cmd, hist, alarms] = await Promise.all([
+      (await fetch('/api/events?tail=50')).json(),
+      (await fetch('/api/commands?tail=50')).json(),
+      (await fetch('/api/alarm-history?tail=50')).json(),
+      (await fetch('/api/alarms')).json(),
+    ]);
+    document.getElementById('tbl-events').innerHTML =
+      '<tr><th>时间</th><th>CEID</th><th>描述</th></tr>' +
+      ev.map(e => `<tr><td>${fmtTime(e.time)}</td><td>${e.ceid}</td><td>${e.description}</td></tr>`).join('');
+    document.getElementById('tbl-cmds').innerHTML =
+      '<tr><th>时间</th><th>来源</th><th>站口</th><th>命令</th><th>结果</th><th>耗时</th></tr>' +
+      cmd.history.map(c => `<tr><td>${fmtTime(c.time)}</td><td>${c.source}</td><td>${c.station}</td><td>${c.cmd}</td>` +
+        `<td class="${c.ok ? 'ok-txt' : 'fail-txt'}">${c.ok ? 'OK' : 'FAIL'}</td><td>${c.elapsedMs}ms</td></tr>`).join('') +
+      (cmd.pending.length ? `<tr><td colspan="6" class="fail-txt">悬空命令 ${cmd.pending.length} 条：${cmd.pending.map(p => p.cmd + ' ' + p.carrierId).join('；')}</td></tr>` : '');
+    document.getElementById('tbl-alarmhist').innerHTML =
+      '<tr><th>时间</th><th>动作</th><th>单位</th><th>告警码</th><th>文本</th></tr>' +
+      hist.map(h => `<tr><td>${fmtTime(h.time)}</td><td class="${h.action === 'SET' ? 'fail-txt' : 'ok-txt'}">${h.action}</td><td>${h.unitId}</td><td>${h.alarmId}</td><td>${h.text}</td></tr>`).join('');
+    document.getElementById('tbl-alarms').innerHTML =
+      '<tr><th>单位</th><th>告警码</th><th>文本</th><th>状态</th><th></th></tr>' +
+      alarms.map(a => `<tr><td>${a.unitId}</td><td>${a.alarmId}</td><td>${a.alarmText}</td><td>${a.acked ? '已确认' : '未确认'}</td>` +
+        `<td>${a.acked ? '' : `<button onclick="ack(${a.alarmId})">确认</button>`}</td></tr>`).join('') ||
+      '<tr><td colspan="5">无告警</td></tr>';
+  } catch (e) { /* 忽略瞬时错误 */ }
+}
+
+async function loadLogs() {
+  if (logPaused) return;
+  try {
+    const url = '/api/logs?tail=200' + (logFilter ? '&category=' + encodeURIComponent(logFilter) : '');
+    const logs = await (await fetch(url)).json();
+    const box = document.getElementById('logs');
+    const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 30;
+    box.innerHTML = logs.map(l =>
+      `<div><span class="t">${fmtTime(l.time)}</span> <span class="c">[${l.category}]</span> <span class="${clsForLog(l)}">${l.message.replace(/</g, '&lt;')}</span></div>`).join('');
+    if (atBottom) box.scrollTop = box.scrollHeight;
+  } catch (e) { /* 忽略瞬时错误 */ }
+}
+
+function setLogFilter(f) { logFilter = f; document.querySelectorAll('#logFilter button').forEach(b => b.style.fontWeight = ''); loadLogs(); }
+function toggleLogPause() {
+  logPaused = !logPaused;
+  const btn = document.getElementById('logPauseBtn');
+  btn.textContent = logPaused ? '继续' : '暂停';
+  document.getElementById('logState').textContent = logPaused ? '（已暂停）' : '';
+  if (!logPaused) loadLogs();
+}
+function switchTab(name, btn) {
+  document.querySelectorAll('.tabpanel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tabbar button').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  btn.classList.add('active');
+}
+
+function askConfirm() {
+  const type = document.getElementById('cmdType').value;
+  const loc = document.getElementById('loc').value.trim();
+  const id = document.getElementById('carrierId').value.trim();
+  if (!loc || (type === 'install' && !id)) { document.getElementById('cmdMsg').textContent = '请填写位置' + (type === 'install' ? '和载具 ID' : ''); return; }
+  pendingCmd = { cmd: type, carrierId: id, carrierLoc: loc };
+  document.getElementById('confirmText').innerHTML =
+    `<b>${type === 'install' ? '安装' : '移除'}</b>：<br>位置 <b>${loc}</b><br>载具 <b>${id || '（按位置移除）'}</b>`;
+  document.getElementById('confirmBox').style.display = 'flex';
+}
+async function doSendCmd(confirm) {
+  document.getElementById('confirmBox').style.display = 'none';
+  if (!confirm || !pendingCmd) return;
+  const r = await fetch('/api/command', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(pendingCmd) });
   document.getElementById('cmdMsg').textContent = r.ok ? '命令已执行' : '执行失败（检查位置/载具 ID）';
+  pendingCmd = null;
 }
-async function ack(id) {
-  await fetch('/api/alarms/' + id + '/ack', { method: 'POST' });
-  load();
-}
-setInterval(load, 1500);
-load();
+async function ack(id) { await fetch('/api/alarms/' + id + '/ack', { method: 'POST' }); loadActivity(); }
+
+loadStatus(); loadActivity(); loadLogs();
+setInterval(loadStatus, 1500);
+setInterval(loadActivity, 3000);
+setInterval(loadLogs, 2000);
 </script>
 </body>
 </html>

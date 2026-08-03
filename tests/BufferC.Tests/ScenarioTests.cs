@@ -488,4 +488,76 @@ public sealed class ScenarioTests : IAsyncLifetime
             svc.Dispose();
         }
     }
+
+    [Fact]
+    public async Task Scenario26_WebInfo_LogsStatsActivity()
+    {
+        // 信息增强：日志 API / 统计字段 / 事件流 / 命令历史 / 告警历史（开发文档 §2 界面服务）
+        var cfg = new BufferCConfig
+        {
+            Plcs = { new PlcConfig { Index = 1, Ip = "127.0.0.1", Port = _plc.Port, UnitId = 1, ByteOrder = "high" } },
+            Hsms = new HsmsConfig { ListenPort = 5008 },
+            PollIntervalMs = 100,
+            WebPort = 5007,
+            LogFile = "test-bufferc.log",
+        };
+        var svc = new BufferCService(cfg);
+        svc.Start();
+        var web = BufferC.Host.WebUi.Start(svc, 5007);
+        try
+        {
+            using var http = new HttpClient { BaseAddress = new Uri("http://127.0.0.1:5007") };
+            await Task.Delay(300);
+            var mcs = new McsSim();
+            mcs.Connect("127.0.0.1", 5008);
+            await mcs.EstablishAsync();
+
+            // 1) 事件流 + 日志 API
+            _plc.SetCarrierId(3, "INFO001");
+            _plc.SetStationState(3, 2);
+            await Task.Delay(200);
+            _plc.SetStationState(3, 1);
+            Assert.NotNull(await mcs.WaitForEventAsync(204));
+            await Task.Delay(200);
+
+            var events = await http.GetStringAsync("/api/events?tail=50");
+            Assert.Contains("204", events);
+            Assert.Contains("INFO001", events);
+
+            var logs = await http.GetStringAsync("/api/logs?tail=200");
+            Assert.Contains("PLC1", logs);
+            var logsPlc = await http.GetStringAsync("/api/logs?tail=200&category=PLC1");
+            Assert.Contains("已连接", logsPlc);
+
+            // 2) 状态统计与寄存器视图字段
+            var status = await http.GetStringAsync("/api/status");
+            Assert.Contains("\"connected\":true", status);       // PLC 在线
+            Assert.Contains("pollCount", status);
+            Assert.Contains("bufferNo", status);                 // 寄存器视图
+            Assert.Contains("messagesOut", status);              // MCS 统计
+            Assert.Contains("startedAt", status);                // 系统信息
+
+            // 3) 命令历史 + 告警历史
+            await http.PostAsJsonAsync("/api/command",
+                new { cmd = "install", carrierId = "INFO002", carrierLoc = "Buffer1_Port4" });
+            Assert.NotNull(await mcs.WaitForEventAsync(201));
+            var cmds = await http.GetStringAsync("/api/commands");
+            Assert.Contains("INFO002", cmds);
+            Assert.Contains("MANUAL", cmds);                     // 来源
+
+            _plc.SetStationAlarm(2, 9);
+            Assert.NotNull(await mcs.WaitForEventAsync(102));
+            _plc.SetStationAlarm(2, 0);
+            Assert.NotNull(await mcs.WaitForEventAsync(101));
+            var hist = await http.GetStringAsync("/api/alarm-history");
+            Assert.Contains("SET", hist);
+            Assert.Contains("CLEAR", hist);
+            mcs.Dispose();
+        }
+        finally
+        {
+            await web.StopAsync();
+            svc.Dispose();
+        }
+    }
 }

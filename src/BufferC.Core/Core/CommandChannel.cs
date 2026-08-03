@@ -25,6 +25,10 @@ public sealed class CommandChannel
 
     public uint LastSeq => _seq;
 
+    /// <summary>命令统计（界面/联调用）</summary>
+    public long CommandCount;
+    public long CommandFailCount;
+
     /// <summary>执行一条站口命令；成功返回 true</summary>
     public bool Execute(int station, ushort cmd, string? carrierId)
     {
@@ -40,8 +44,14 @@ public sealed class CommandChannel
                         RegisterMap.PackAscii(carrierId ?? "", _cfg.ByteOrder));
                 _client.WriteSingleRegister((ushort)(RegisterMap.RegCmdStation + station - 1), cmd);
                 _client.WriteSingleRegister(RegisterMap.RegCmdNo, (ushort)_seq);
-                if (WaitEcho((ushort)_seq, station, cmd)) return true;
+                if (WaitEcho((ushort)_seq, station, cmd))
+                {
+                    CommandCount++;
+                    return true;
+                }
             }
+            CommandCount++;
+            CommandFailCount++;
             return false;
         }
         finally { _gate.Release(); }

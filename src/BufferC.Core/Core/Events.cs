@@ -23,10 +23,14 @@ public sealed record PlcEvent(EventKind Kind, Dictionary<string, string> Params)
 public sealed class PlcSnapshot
 {
     public int PlcIndex;
+    public ushort BufferNo;                          // 0
+    public ushort AlarmSummary;                      // 1
     public ushort[] StationState = new ushort[16];   // 2~17
     public ushort[] StationAlarm = new ushort[16];   // 18~33
     public ushort[] StationAvail = new ushort[16];   // 34~49
     public string[] CarrierId = new string[16];      // 50~305（仅状态变化时读取更新）
+    public ushort EchoNo;                            // 306
+    public ushort[] EchoStation = new ushort[16];    // 307~322
     public ushort Handshake;                         // 340
     public ushort ScanStation;                       // 323
     public string ScanCode = "";                     // 324~339
@@ -120,10 +124,14 @@ public sealed class EventEngine
     private static PlcSnapshot Clone(PlcSnapshot s) => new()
     {
         PlcIndex = s.PlcIndex,
+        BufferNo = s.BufferNo,
+        AlarmSummary = s.AlarmSummary,
         StationState = (ushort[])s.StationState.Clone(),
         StationAlarm = (ushort[])s.StationAlarm.Clone(),
         StationAvail = (ushort[])s.StationAvail.Clone(),
         CarrierId = (string[])s.CarrierId.Clone(),
+        EchoNo = s.EchoNo,
+        EchoStation = (ushort[])s.EchoStation.Clone(),
         Handshake = s.Handshake,
         ScanStation = s.ScanStation,
         ScanCode = s.ScanCode,

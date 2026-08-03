@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using System.Text.RegularExpressions;
 using BufferC.Core.Config;
@@ -75,6 +76,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
     // ---------- 生命周期 ----------
     public void Start()
     {
+        StartedAt = DateTime.Now;
         _hsms = new HsmsServer(_cfg.Hsms, this);
         _hsms.Log += (c, m) => Log(c, m);
         _hsms.OnHostCommand += HandleHostCommand;
@@ -106,10 +108,33 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
     private readonly object _logLock = new();
     private StreamWriter? _logWriter;
 
+    // ---------- 活动记录（界面/联调用，环形缓冲） ----------
+    public sealed record LogEntry(DateTime Time, string Category, string Message);
+    public sealed record EventEntry(DateTime Time, ushort Ceid, string Description);
+    public sealed record CmdEntry(DateTime Time, string Source, int Station, string Cmd, bool Ok, long ElapsedMs, string CarrierId);
+    public sealed record AlarmHistoryEntry(DateTime Time, string UnitId, uint AlarmId, string Text, string Action);
+
+    private readonly RingBuffer<LogEntry> _logs = new(500);
+    private readonly RingBuffer<EventEntry> _events = new(100);
+    private readonly RingBuffer<CmdEntry> _cmds = new(100);
+    private readonly RingBuffer<AlarmHistoryEntry> _alarmHistory = new(100);
+    public DateTime StartedAt;
+
+    public List<LogEntry> GetLogs(int tail, string? category = null)
+    {
+        var all = _logs.GetTail(tail * 2);
+        return category == null ? all.TakeLast(tail).ToList()
+            : all.Where(l => l.Category.Contains(category, StringComparison.OrdinalIgnoreCase)).TakeLast(tail).ToList();
+    }
+    public List<EventEntry> GetEvents(int tail = 50) => _events.GetTail(tail);
+    public List<CmdEntry> GetCommands(int tail = 50) => _cmds.GetTail(tail);
+    public List<AlarmHistoryEntry> GetAlarmHistory(int tail = 50) => _alarmHistory.GetTail(tail);
+
     public void Log(string category, string msg)
     {
         var line = $"[{DateTime.Now:HH:mm:ss.fff}][{category}] {msg}";
         Console.WriteLine(line);
+        _logs.Add(new LogEntry(DateTime.Now, category, msg));
         try
         {
             // 单例 writer（高频事件下避免反复开关文件句柄）；UTF-8 带 BOM 兼容 PowerShell 5.1
@@ -125,7 +150,19 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
 
     public void Emit(int plcIndex, IReadOnlyList<PlcEvent> events)
     {
-        foreach (var ev in events) HandleEvent(plcIndex, ev);
+        foreach (var ev in events)
+        {
+            _events.Add(new EventEntry(DateTime.Now, (ushort)ev.Kind, DescribeEvent(ev)));
+            HandleEvent(plcIndex, ev);
+        }
+    }
+
+    private static string DescribeEvent(PlcEvent ev)
+    {
+        var parts = ev.Params
+            .Where(kv => kv.Key is "CarrierID" or "CarrierLoc" or "UnitId" or "AlarmId")
+            .Select(kv => $"{kv.Key}={kv.Value}");
+        return $"{ev.Kind} {string.Join(" ", parts)}".Trim();
     }
 
     private void HandleEvent(int plcIndex, PlcEvent ev)
@@ -175,6 +212,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
                 string unit = p.GetValueOrDefault("UnitId", "");
                 hsms.SendS5F1(true, alid, text);
                 hsms.SendS6F11(102, 1, Rpt1(p));
+                _alarmHistory.Add(new AlarmHistoryEntry(DateTime.Now, unit, alid, text, "SET"));
                 lock (_alarmLock)
                     if (_alarms.All(a => a.AlarmId != alid)) _alarms.Add(new AlarmStatus(unit, alid, text));
                 break;
@@ -187,8 +225,10 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
                 // SC 级：S5F1(清除) + 101（仅最后一个单位清除时触发）
                 uint alid = uint.Parse(p.GetValueOrDefault("AlarmId", "0"));
                 string text = p.GetValueOrDefault("AlarmText", "Alarm");
+                string unit = p.GetValueOrDefault("UnitId", "");
                 hsms.SendS5F1(false, alid, text);
                 hsms.SendS6F11(101, 1, Rpt1(p));
+                _alarmHistory.Add(new AlarmHistoryEntry(DateTime.Now, unit, alid, text, "CLEAR"));
                 lock (_alarmLock) _alarms.RemoveAll(a => a.AlarmId == alid);
                 break;
             }
@@ -244,6 +284,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
     /// <summary>安装载具（source: MCS/AGVC/MANUAL；成功返回 true 并上报 201）</summary>
     public bool ManualInstall(string carrierId, string loc, string source = "MANUAL")
     {
+        var sw = Stopwatch.StartNew();
         var m = LocRegex.Match(loc);
         if (!m.Success || carrierId.Length == 0)
         {
@@ -254,7 +295,9 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
         var poller = _pollers.FirstOrDefault(x => x.Config.Index == plc);
         if (poller == null) { Log("CMD", $"PLC{plc} 不存在"); return false; }
         bool ok = poller.Channel.Execute(st, RegisterMap.CmdWrite, carrierId);
-        Log("CMD", $"安装 站口{st} 写入 {(ok ? "OK" : "FAIL")}");
+        sw.Stop();
+        _cmds.Add(new CmdEntry(DateTime.Now, source, st, "CarrierDataInstall", ok, sw.ElapsedMilliseconds, carrierId));
+        Log("CMD", $"安装 站口{st} 写入 {(ok ? "OK" : "FAIL")}（{sw.ElapsedMilliseconds}ms）");
         if (ok)
         {
             _inv.SetCarrier(plc, st, carrierId, loc);
@@ -270,6 +313,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
     /// <summary>移除载具（成功返回 true 并上报 202）</summary>
     public bool ManualRemove(string carrierId, string source = "MANUAL")
     {
+        var sw = Stopwatch.StartNew();
         if (!_inv.FindCarrier(carrierId, out int plc, out int st))
         {
             Log("CMD", $"移除找不到 {carrierId}（库存无此载具）");
@@ -277,7 +321,9 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
         }
         var poller = _pollers.FirstOrDefault(x => x.Config.Index == plc);
         bool ok = poller != null && poller.Channel.Execute(st, RegisterMap.CmdClear, null);
-        Log("CMD", $"移除 {carrierId} 清除 {(ok ? "OK" : "FAIL")}");
+        sw.Stop();
+        _cmds.Add(new CmdEntry(DateTime.Now, source, st, "CarrierDataRemove", ok, sw.ElapsedMilliseconds, carrierId));
+        Log("CMD", $"移除 {carrierId} 清除 {(ok ? "OK" : "FAIL")}（{sw.ElapsedMilliseconds}ms）");
         if (ok)
         {
             _inv.RemoveCarrier(plc, st, out _);
@@ -303,9 +349,16 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
     }
 
     // ---------- Web 界面状态视图 ----------
-    public sealed record StatusView(int ControlState, int ScState, bool HsmsConnected, List<PlcView> Plcs, List<AlarmStatus> Alarms);
-    public sealed record PlcView(int Index, string Ip, bool Connected, List<StationView> Stations);
-    public sealed record StationView(int Station, int State, int Alarm, int Avail, string CarrierId, string CarrierLoc, string InstallTime);
+    public sealed record StatusView(int ControlState, int ScState, bool HsmsConnected, List<PlcView> Plcs,
+        List<AlarmStatus> Alarms, Secs.HsmsServer.McsStats Mcs, SystemInfo System);
+    public sealed record PlcView(int Index, string Ip, bool Connected, PlcPoller.PlcStats Stats,
+        PlcRegisters Registers, List<StationView> Stations);
+    public sealed record PlcRegisters(ushort BufferNo, ushort AlarmSummary, ushort EchoNo, ushort[] EchoStation,
+        ushort ScanStation, string ScanCode, ushort Handshake, string ByteOrder);
+    public sealed record StationView(int Station, int State, int Alarm, int Avail, string CarrierId, bool Truncated,
+        string CarrierLoc, string InstallTime);
+    public sealed record SystemInfo(DateTime StartedAt, string Mdln, string SoftRev, string PlcSummary,
+        string ByteOrderSummary, double PollIntervalMs, int HsmsPort, int WebPort);
 
     public StatusView GetStatusView()
     {
@@ -319,18 +372,34 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
                 var loc = EventEngine.Loc(p.Config.Index, i + 1);
                 // 台账为权威（含手动安装/命令安装）；快照兜底 AGV 实况
                 var carrier = _inv.Carriers.FirstOrDefault(c => c.CarrierLoc == loc);
+                var id = carrier?.CarrierId ?? (s != null ? s.CarrierId[i] ?? "" : "");
                 stations.Add(new StationView(i + 1,
                     s != null ? s.StationState[i] : 0,
                     s != null ? s.StationAlarm[i] : 0,
                     s != null ? s.StationAvail[i] : 0,
-                    carrier?.CarrierId ?? (s != null ? s.CarrierId[i] ?? "" : ""),
+                    id, id.Length >= RegisterMap.CarrierIdChars,
                     loc, carrier?.InstallTime ?? ""));
             }
-            plcs.Add(new PlcView(p.Config.Index, p.Config.Ip, s != null, stations));
+            plcs.Add(new PlcView(p.Config.Index, p.Config.Ip, p.IsConnected, p.GetStats(), new PlcRegisters(
+                s != null ? s.BufferNo : (ushort)0,
+                s != null ? s.AlarmSummary : (ushort)0,
+                s != null ? s.EchoNo : (ushort)0,
+                s != null ? s.EchoStation : new ushort[16],
+                s != null ? s.ScanStation : (ushort)0,
+                s != null ? s.ScanCode : "",
+                s != null ? s.Handshake : (ushort)0,
+                p.Config.ByteOrder), stations));
         }
         bool connected = _hsms?.Connected == true;
-        return new StatusView(connected ? 5 : 1, 3, connected, plcs, Alarms.ToList());
+        return new StatusView(connected ? 5 : 1, 3, connected, plcs, Alarms.ToList(),
+            _hsms?.GetStats() ?? new Secs.HsmsServer.McsStats(false, null, "", 0, 0, 0, 0, "", ""),
+            GetSystemInfo());
     }
+
+    public SystemInfo GetSystemInfo() => new(StartedAt, _cfg.Hsms.Mdln, _cfg.Hsms.SoftRev,
+        string.Join(", ", _cfg.Plcs.Select(p => $"{p.Index}:{p.Ip}")),
+        string.Join(", ", _cfg.Plcs.Select(p => p.ByteOrder).Distinct()),
+        _cfg.PollIntervalMs, _cfg.Hsms.ListenPort, _cfg.WebPort);
 
     // ---------- S2F41 主机命令 ----------
     private void HandleHostCommand(string rcmd, Dictionary<string, string> pars)

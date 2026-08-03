@@ -23,7 +23,15 @@ public static class WebUi
 
         app.MapGet("/api/status", () => Results.Json(service.GetStatusView()));
         app.MapGet("/api/alarms", () => Results.Json(service.Alarms));
-        app.MapGet("/api/commands", () => Results.Json(service.FailedCommands));   // 悬空命令（C1）
+        app.MapGet("/api/commands", (int? tail) => Results.Json(new
+        {
+            history = service.GetCommands(tail ?? 50),        // 命令历史（活动面板）
+            pending = service.FailedCommands,                 // 悬空命令（C1）
+        }));
+        app.MapGet("/api/events", (int? tail) => Results.Json(service.GetEvents(tail ?? 50)));
+        app.MapGet("/api/alarm-history", (int? tail) => Results.Json(service.GetAlarmHistory(tail ?? 50)));
+        app.MapGet("/api/logs", (int? tail, string? category) =>
+            Results.Json(service.GetLogs(tail ?? 200, category)));
         app.MapPost("/api/alarms/{alid:long}/ack", (long alid) =>
             service.AckAlarm((uint)alid) ? Results.Ok() : Results.NotFound());
         app.MapPost("/api/command", (ManualCommand req) =>

@@ -50,6 +50,22 @@ public sealed class HsmsServer : IDisposable
 
     public bool Connected => _client?.Connected == true;
 
+    // ---------- 运行统计（界面/联调用） ----------
+    public DateTime? EstablishedAt;
+    public string PeerEndpoint = "";
+    public long MessagesIn;
+    public long MessagesOut;
+    public long SendFailCount;
+    public long T3TimeoutCount;
+    public string PeerMdln = "";
+    public string PeerSoftRev = "";
+
+    public sealed record McsStats(bool Connected, DateTime? EstablishedAt, string PeerEndpoint,
+        long MessagesIn, long MessagesOut, long SendFail, long T3Timeout, string PeerMdln, string PeerSoftRev);
+
+    public McsStats GetStats() => new(Connected, EstablishedAt, PeerEndpoint,
+        MessagesIn, MessagesOut, SendFailCount, T3TimeoutCount, PeerMdln, PeerSoftRev);
+
     public void Start()
     {
         _cts = new CancellationTokenSource();
@@ -108,7 +124,9 @@ public sealed class HsmsServer : IDisposable
                     _client = client;
                     _stream = client.GetStream();
                 }
-                Log?.Invoke("HSMS", $"MCS 连接建立 {client.Client.RemoteEndPoint}");
+                EstablishedAt = DateTime.Now;
+                PeerEndpoint = client.Client.RemoteEndPoint?.ToString() ?? "";
+                Log?.Invoke("HSMS", $"MCS 连接建立 {PeerEndpoint}");
                 _ = Task.Run(() => ClientLoopAsync(ct));
             }
             catch (OperationCanceledException) { break; }
@@ -124,6 +142,7 @@ public sealed class HsmsServer : IDisposable
             {
                 var msg = await ReadMessageAsync(_stream, ct);
                 if (msg == null) break;
+                MessagesIn++;
                 LogFrame("←MCS", $"{msg.Name} sys={msg.SystemBytes} HEX={Convert.ToHexString(msg.ToBytes())}\n{msg.Sml()}");
                 Dispatch(msg);
             }
@@ -174,7 +193,20 @@ public sealed class HsmsServer : IDisposable
                 switch (m.Function)
                 {
                     case 13: SendReply(1, 14, SecsEncode.L(SecsEncode.B(0), SecsEncode.L()), m); return; // COMMACK=0
-                    case 1: SendReply(1, 2, SecsEncode.L(SecsEncode.A(_cfg.Mdln), SecsEncode.A(_cfg.SoftRev)), m); return;
+                    case 1:                                   // S1F1：记录对端版本
+                        try
+                        {
+                            var items = m.Items();
+                            var children = items.Count > 0 ? items[0].Children : null;
+                            if (children is { Count: >= 2 })
+                            {
+                                PeerMdln = children[0].AsString();
+                                PeerSoftRev = children[1].AsString();
+                            }
+                        }
+                        catch { }
+                        SendReply(1, 2, SecsEncode.L(SecsEncode.A(_cfg.Mdln), SecsEncode.A(_cfg.SoftRev)), m);
+                        return;
                     case 3: HandleS1F3(m); return;
                     case 15:                                     // OFFLINE（CEID 1 状态迁移事件）
                         SendReply(1, 16, SecsEncode.B(0), m);    // OFLACK
@@ -311,18 +343,20 @@ public sealed class HsmsServer : IDisposable
     {
         lock (_sendLock)
         {
-            if (_stream == null) { Log?.Invoke("HSMS", $"发送失败 S{stream}F{func}（未连接）"); return false; }
+            if (_stream == null) { SendFailCount++; Log?.Invoke("HSMS", $"发送失败 S{stream}F{func}（未连接）"); return false; }
             if (sysBytes == 0) sysBytes = _sysBytes++;
             var msg = new HsmsMessage { Stream = stream, Function = func, WBit = wbit, SystemBytes = sysBytes, Body = body };
             if (wbit) _outstanding[sysBytes] = (msg.Name, DateTime.UtcNow.AddSeconds(45));
             try
             {
                 _stream.Write(msg.ToBytes());
+                MessagesOut++;
                 LogFrame("→MCS", $"{msg.Name} sys={sysBytes}\n{string.Join("\n", msg.Items().Select(x => x.ToSml(1)))}");
                 return true;
             }
             catch (Exception e)
             {
+                SendFailCount++;
                 Log?.Invoke("HSMS", $"发送异常: {e.Message}");
                 return false;
             }
@@ -339,6 +373,7 @@ public sealed class HsmsServer : IDisposable
             {
                 if (now > deadline)
                 {
+                    T3TimeoutCount++;
                     Log?.Invoke("HSMS", $"T3 超时: {name} sys={sys} → S9F9");
                     _outstanding.Remove(sys);
                 }

@@ -40,6 +40,22 @@ public sealed class PlcPoller
     public PlcConfig Config => _cfg;
     public PlcSnapshot? Snapshot => _snapCopy;
 
+    // ---------- 运行统计（界面/联调用） ----------
+    public bool IsConnected;
+    public long LastPollAtMs;
+    public long PollCount;
+    public long ErrorCount;
+    public long ReconnectCount;
+    public string LastError = "";
+
+    public sealed record PlcStats(bool Connected, DateTime LastPollAt, long PollCount, long ErrorCount,
+        long ReconnectCount, string LastError, long CommandCount, long CommandFailCount);
+
+    public PlcStats GetStats() => new(IsConnected,
+        LastPollAtMs == 0 ? DateTime.MinValue : DateTimeOffset.FromUnixTimeMilliseconds(LastPollAtMs).LocalDateTime,
+        PollCount, ErrorCount, ReconnectCount, LastError,
+        _channel.CommandCount, _channel.CommandFailCount);
+
     private string ReadStationId(int station) =>
         RegisterMap.UnpackAscii(_client.ReadHoldingRegisters(
             (ushort)(RegisterMap.RegCarrierId + (station - 1) * RegisterMap.CarrierIdWords), RegisterMap.CarrierIdWords),
@@ -53,6 +69,8 @@ public sealed class PlcPoller
             try
             {
                 _client.Connect();
+                IsConnected = true;
+                ReconnectCount++;
                 _sink.Log($"PLC{_cfg.Index}", $"已连接 {_cfg.Ip}:{_cfg.Port}");
                 backoffMs = 1000;
                 await PollLoopAsync(ct);
@@ -60,6 +78,9 @@ public sealed class PlcPoller
             catch (OperationCanceledException) { break; }
             catch (Exception e)
             {
+                IsConnected = false;
+                ErrorCount++;
+                LastError = e.Message;
                 _sink.Log($"PLC{_cfg.Index}", $"连接/轮询异常: {e.Message}");
                 _client.Disconnect();
                 _prevStates = null;                       // 重连后重新基线（含事件引擎，不补报）
@@ -82,16 +103,22 @@ public sealed class PlcPoller
     private void PollOnce()
     {
         _snap.PlcIndex = _cfg.Index;
+        PollCount++;
+        LastPollAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
         // 1. 快速区：0~49 + 306~340
         var baseRegs = _client.ReadHoldingRegisters(0, 50);
         var fastRegs = _client.ReadHoldingRegisters(306, 35);
+        _snap.BufferNo = baseRegs[RegisterMap.RegBufferNo];
+        _snap.AlarmSummary = baseRegs[RegisterMap.RegAlarmSummary];
         for (int i = 0; i < 16; i++)
         {
             _snap.StationState[i] = baseRegs[RegisterMap.RegStationState + i];
             _snap.StationAlarm[i] = baseRegs[RegisterMap.RegStationAlarm + i];
             _snap.StationAvail[i] = baseRegs[RegisterMap.RegStationAvail + i];
         }
+        _snap.EchoNo = fastRegs[0];
+        Array.Copy(fastRegs, 1, _snap.EchoStation, 0, 16);
         _snap.ScanStation = fastRegs[RegisterMap.RegScanStation - RegisterMap.RegEchoNo];
         _snap.ScanCode = RegisterMap.UnpackAscii(fastRegs[(RegisterMap.RegScanCode - RegisterMap.RegEchoNo)..(RegisterMap.RegScanCode - RegisterMap.RegEchoNo + 16)], _cfg.ByteOrder);
         _snap.Handshake = fastRegs[RegisterMap.RegHandshake - RegisterMap.RegEchoNo];
