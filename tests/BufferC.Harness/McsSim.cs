@@ -53,12 +53,15 @@ public sealed class McsSim : IDisposable
         return done == tcs.Task ? await tcs.Task : null;
     }
 
-    /// <summary>发 S2F41，返回 HCACK</summary>
+    /// <summary>发 S2F41，返回 HCACK（timeoutMs：CI 高负载下放宽）</summary>
     public async Task<byte> SendS2F41Async(string rcmd, params (string Name, string Value)[] pars)
+        => await SendS2F41Async(15000, rcmd, pars);
+
+    public async Task<byte> SendS2F41Async(int timeoutMs, string rcmd, params (string Name, string Value)[] pars)
     {
         var items = pars.Select(p => SecsEncode.L(SecsEncode.A(p.Name), SecsEncode.A(p.Value))).ToArray();
         var body = SecsEncode.L(SecsEncode.A(rcmd), SecsEncode.L(items));
-        var r = await PrimaryAsync(2, 41, body);
+        var r = await PrimaryAsync(2, 41, body, timeoutMs);
         if (r == null || r.Function != 42) throw new Exception("S2F42 未收到");
         var it = r.Items();
         if (it.Count == 0) return 255;

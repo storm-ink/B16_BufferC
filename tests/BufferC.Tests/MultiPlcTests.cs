@@ -6,94 +6,107 @@ using Xunit;
 
 namespace BufferC.Tests;
 
-/// <summary>
-/// 15 台 PLC 并发集成验证（开发文档 §3 架构核心假设）：
-/// 全量事件路由、单台断线隔离、S1F3 全量查询性能。
-/// </summary>
-public sealed class MultiPlcTests : IAsyncLifetime
+/// <summary>15 台 PLC 类级共享 fixture（一次启动，3 个测试共享——避免 CI 上连续启停 15 台仿真的端口冲突）</summary>
+public sealed class MultiPlcFixture : IDisposable
 {
-    private const int PlcCount = 15;
-    private readonly List<PlcSim> _plcs = new();
-    private BufferCService _svc = null!;
-    private McsSim _mcs = null!;
+    public const int HsmsPort = 5010;
+    public const int PlcCount = 15;
+    public readonly List<PlcSim> Plcs = new();
+    public readonly BufferCService Svc;
 
-    public async Task InitializeAsync()
+    public MultiPlcFixture()
     {
-        var cfg = new BufferCConfig { Hsms = new HsmsConfig { ListenPort = 5010 }, PollIntervalMs = 100, LogFile = "test-bufferc.log" };
+        var cfg = new BufferCConfig { Hsms = new HsmsConfig { ListenPort = HsmsPort }, PollIntervalMs = 100, LogFile = "test-bufferc.log" };
         for (int i = 1; i <= PlcCount; i++)
         {
             var plc = new PlcSim(index: i, unitId: 1);
             int port = plc.Start();
-            _plcs.Add(plc);
+            Plcs.Add(plc);
             cfg.Plcs.Add(new PlcConfig { Index = i, Ip = "127.0.0.1", Port = port, UnitId = 1, ByteOrder = "high" });
         }
-        _svc = new BufferCService(cfg);
-        _svc.Start();
-        _mcs = new McsSim();
-        _mcs.Connect("127.0.0.1", 5010);
-        await _mcs.EstablishAsync();
-        // 等 15 台全部完成基线轮询（CI 机器较慢，固定 delay 不可靠）
-        var deadline = Environment.TickCount64 + 15000;
-        while (!_svc.AllPlcsReady && Environment.TickCount64 < deadline)
-            await Task.Delay(100);
-        Assert.True(_svc.AllPlcsReady, "15 台 PLC 未在 15s 内完成基线轮询");
+        Svc = new BufferCService(cfg);
+        Svc.Start();
+        // 阻塞等 15 台基线就绪
+        var deadline = Environment.TickCount64 + 20000;
+        while (!Svc.AllPlcsReady && Environment.TickCount64 < deadline) Thread.Sleep(100);
+        if (!Svc.AllPlcsReady) throw new Exception("15 台 PLC 未在 20s 内完成基线轮询");
     }
 
-    public Task DisposeAsync()
+    public void Dispose()
     {
-        _mcs.Dispose();
-        _svc.Dispose();
-        foreach (var p in _plcs) p.Dispose();
-        return Task.CompletedTask;
+        Svc.Dispose();
+        foreach (var p in Plcs) p.Dispose();
+    }
+}
+
+/// <summary>
+/// 15 台 PLC 并发集成验证（开发文档 §3 架构核心假设）：
+/// 全量事件路由、单台断线隔离、S1F3 全量查询性能。
+/// </summary>
+public sealed class MultiPlcTests : IClassFixture<MultiPlcFixture>
+{
+    private readonly MultiPlcFixture _fx;
+
+    public MultiPlcTests(MultiPlcFixture fx) => _fx = fx;
+
+    private async Task<McsSim> ConnectMcsAsync()
+    {
+        var mcs = new McsSim();
+        mcs.Connect("127.0.0.1", MultiPlcFixture.HsmsPort);
+        await mcs.EstablishAsync();
+        return mcs;
     }
 
     [Fact]
     public async Task FifteenPlcs_AllEvents_RoutedCorrectly()
     {
+        using var mcs = await ConnectMcsAsync();
         // 每台 PLC 站口 1 放入 → 15 个 204，载具 ID 各自正确
-        for (int i = 0; i < PlcCount; i++)
+        for (int i = 0; i < MultiPlcFixture.PlcCount; i++)
         {
-            _plcs[i].SetCarrierId(1, $"C{i + 1:000}");
-            _plcs[i].SetStationState(1, 2);
+            _fx.Plcs[i].SetCarrierId(1, $"C{i + 1:000}");
+            _fx.Plcs[i].SetStationState(1, 2);
         }
         await Task.Delay(400);
-        for (int i = 0; i < PlcCount; i++) _plcs[i].SetStationState(1, 1);
+        for (int i = 0; i < MultiPlcFixture.PlcCount; i++) _fx.Plcs[i].SetStationState(1, 1);
 
-        Assert.Equal(PlcCount, await _mcs.WaitForEventCountAsync(204, PlcCount, 10000));
+        Assert.Equal(MultiPlcFixture.PlcCount, await mcs.WaitForEventCountAsync(204, MultiPlcFixture.PlcCount, 10000));
 
         // S1F3 全量查询：EnhancedCarriers 反映 15 台实况
-        var items = await _mcs.QuerySvidAsync(15);
-        Assert.Equal(PlcCount, items[0].Children!.Count);
+        var items = await mcs.QuerySvidAsync(15);
+        Assert.Equal(MultiPlcFixture.PlcCount, items[0].Children!.Count);
         Assert.Contains(items[0].Children!, c => c.Children![0].AsString() == "C007");
     }
 
     [Fact]
     public async Task SinglePlcDisconnect_OthersUnaffected()
     {
+        using var mcs = await ConnectMcsAsync();
         // 掐断 5 号 PLC → 其余 14 台事件照常
-        _plcs[4].DropConnection();
+        _fx.Plcs[4].DropConnection();
         await Task.Delay(1500);   // 5 号走重连退避
-        for (int i = 0; i < PlcCount; i++)
+        for (int i = 0; i < MultiPlcFixture.PlcCount; i++)
         {
             if (i == 4) continue;
-            _plcs[i].SetCarrierId(2, $"D{i + 1:000}");
-            _plcs[i].SetStationState(2, 2);
+            _fx.Plcs[i].SetCarrierId(2, $"D{i + 1:000}");
+            _fx.Plcs[i].SetStationState(2, 2);
         }
         await Task.Delay(400);
-        for (int i = 0; i < PlcCount; i++)
+        for (int i = 0; i < MultiPlcFixture.PlcCount; i++)
         {
             if (i == 4) continue;
-            _plcs[i].SetStationState(2, 1);
+            _fx.Plcs[i].SetStationState(2, 1);
         }
-        Assert.Equal(PlcCount - 1, await _mcs.WaitForEventCountAsync(204, PlcCount - 1, 10000));
+        Assert.Equal(MultiPlcFixture.PlcCount - 1, await mcs.WaitForEventCountAsync(204, MultiPlcFixture.PlcCount - 1, 10000));
     }
 
     [Fact]
     public async Task S1F3_FullQuery_Performance()
     {
+        using var mcs = await ConnectMcsAsync();
         // 全量查询（5 个 SVID，含 240 站口视图组装）性能：目标 < 3s（联调口径），实测应 < 300ms
         var sw = Stopwatch.StartNew();
-        var items = await _mcs.QuerySvidAsync(14, 21, 15, 29, 3);
+        var items = await mcs.QuerySvidAsync(14, 21, 15, 29, 3);
         sw.Stop();
         Assert.Equal(5, items.Count);
         Assert.True(sw.ElapsedMilliseconds < 3000, $"S1F3 全量查询耗时 {sw.ElapsedMilliseconds}ms");
