@@ -278,7 +278,8 @@ public sealed class ScenarioTests : IAsyncLifetime
             var mcs2 = new McsSim();
             mcs2.Connect("127.0.0.1", 5000);
             await mcs2.EstablishAsync();
-            await Task.Delay(400);                                       // 等轮询基线
+            var ready = Environment.TickCount64 + 15000;                 // 等轮询基线就绪
+            while (!svc2.AllPlcsReady && Environment.TickCount64 < ready) await Task.Delay(100);
             var items = await mcs2.QuerySvidAsync(15);
             var carriers = items[0].Children!;
             Assert.Single(carriers);                                     // PLC 实况已反映
