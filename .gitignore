@@ -1,0 +1,20 @@
+# .NET 构建产物
+bin/
+obj/
+
+# 发布产物（联调/部署包不入库，按需单独分发）
+publish/
+
+# 运行数据
+*.db
+*.db-shm
+*.db-wal
+*.log
+
+# IDE
+.vs/
+.idea/
+*.user
+
+# 测试结果
+TestResults/

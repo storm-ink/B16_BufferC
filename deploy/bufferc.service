@@ -1,0 +1,17 @@
+[Unit]
+Description=BufferC AMHS Buffer Controller
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/bufferc
+ExecStart=/opt/bufferc/BufferC.Host config.json
+Restart=always
+RestartSec=3
+# 日志走 journald（也可在 config.json 的 logFile 同时落文件）
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

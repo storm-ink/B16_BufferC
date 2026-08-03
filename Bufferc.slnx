@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/BufferC.Core/BufferC.Core.csproj" />
+    <Project Path="src/BufferC.Host/BufferC.Host.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/BufferC.Harness/BufferC.Harness.csproj" />
+    <Project Path="tests/BufferC.Tests/BufferC.Tests.csproj" />
+  </Folder>
+</Solution>

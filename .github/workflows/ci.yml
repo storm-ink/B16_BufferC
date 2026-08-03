@@ -1,0 +1,27 @@
+# BufferC CI：每次提交全量回归（开发文档 §7）
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore Bufferc.slnx
+
+      - name: Build (zero-warning gate)
+        run: dotnet build Bufferc.slnx --no-restore -warnaserror
+
+      - name: Run all tests (unit + scenario regression)
+        run: dotnet test Bufferc.slnx --no-build --logger "console;verbosity=minimal"

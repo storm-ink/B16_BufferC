@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>BufferC 界面</title>
+<style>
+  body { font-family: "Microsoft YaHei", sans-serif; margin: 12px; background: #f5f6f8; }
+  h1 { font-size: 18px; margin: 4px 0; }
+  #statusbar { display: flex; gap: 16px; font-size: 13px; margin: 8px 0; }
+  .badge { padding: 2px 10px; border-radius: 10px; color: #fff; font-size: 12px; }
+  .ok { background: #2e7d32; } .warn { background: #e65100; } .off { background: #757575; }
+  .plc { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 8px; margin: 8px 0; }
+  .plc h2 { font-size: 14px; margin: 2px 0 6px; }
+  .grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; }
+  .cell { border-radius: 4px; padding: 4px 6px; font-size: 11px; min-height: 34px; color: #fff; }
+  .st0 { background: #bdbdbd; } .st1 { background: #2e7d32; } .st2 { background: #1565c0; }
+  .st3 { background: #6a1b9a; } .st4 { background: #c62828; } .st99 { background: #37474f; }
+  .alarm-flag { background: #ffeb3b; color: #000; border-radius: 3px; padding: 0 3px; font-size: 10px; }
+  table { border-collapse: collapse; width: 100%; background: #fff; font-size: 13px; }
+  th, td { border: 1px solid #ddd; padding: 4px 8px; text-align: left; }
+  .cmd { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 8px; margin: 8px 0; }
+  .cmd input, .cmd select, .cmd button { margin-right: 6px; padding: 4px 8px; }
+  .msg { margin-top: 6px; font-size: 12px; color: #1565c0; }
+</style>
+</head>
+<body>
+<h1>BufferC 缓冲库界面</h1>
+<div id="statusbar"></div>
+<div id="plcs"></div>
+
+<div class="cmd">
+  <h2>手动命令</h2>
+  <select id="cmdType"><option value="install">安装 (Install)</option><option value="remove">移除 (Remove)</option></select>
+  <input id="loc" placeholder="位置，如 Buffer1_Port3" size="18">
+  <input id="carrierId" placeholder="载具 ID（安装时）" size="20">
+  <button onclick="sendCmd()">执行</button>
+  <span id="cmdMsg" class="msg"></span>
+</div>
+
+<h2>当前告警</h2>
+<table id="alarms"><thead><tr><th>单位</th><th>告警码</th><th>文本</th><th>状态</th><th></th></tr></thead><tbody></tbody></table>
+
+<script>
+async function load() {
+  try {
+    const r = await fetch('/api/status');
+    const s = await r.json();
+    // 状态栏
+    document.getElementById('statusbar').innerHTML =
+      `<span>MCS: <span class="badge ${s.hsmsConnected ? 'ok' : 'off'}">${s.hsmsConnected ? 'ONLINE' : 'OFFLINE'}</span></span>` +
+      `<span>SC: AUTO</span><span>告警数: ${s.alarms.length}</span>`;
+    // PLC 网格
+    let html = '';
+    for (const p of s.plcs) {
+      html += `<div class="plc"><h2>${p.index} 号 Buffer (${p.ip}) ${p.connected ? '' : '<span class="badge off">离线</span>'}</h2><div class="grid">`;
+      for (const st of p.stations) {
+        const cls = 'st' + (st.state === 99 ? 99 : st.state);
+        html += `<div class="cell ${cls}" title="状态${st.state} 告警${st.alarm} 可用${st.avail}">
+          站${st.station}<br>${st.carrierId || '—'}${st.alarm ? ' <span class="alarm-flag">A' + st.alarm + '</span>' : ''}</div>`;
+      }
+      html += '</div></div>';
+    }
+    document.getElementById('plcs').innerHTML = html;
+    // 告警表
+    const ar = await fetch('/api/alarms');
+    const alarms = await ar.json();
+    document.getElementById('alarms').querySelector('tbody').innerHTML = alarms.map(a =>
+      `<tr><td>${a.unitId}</td><td>${a.alarmId}</td><td>${a.alarmText}</td><td>${a.acked ? '已确认' : '未确认'}</td>` +
+      `<td>${a.acked ? '' : `<button onclick="ack(${a.alarmId})">确认</button>`}</td></tr>`).join('');
+  } catch (e) { document.getElementById('statusbar').innerHTML = '<span class="warn">加载失败: ' + e + '</span>'; }
+}
+async function sendCmd() {
+  const body = { cmd: document.getElementById('cmdType').value,
+                 carrierId: document.getElementById('carrierId').value,
+                 carrierLoc: document.getElementById('loc').value };
+  const r = await fetch('/api/command', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  document.getElementById('cmdMsg').textContent = r.ok ? '命令已执行' : '执行失败（检查位置/载具 ID）';
+}
+async function ack(id) {
+  await fetch('/api/alarms/' + id + '/ack', { method: 'POST' });
+  load();
+}
+setInterval(load, 1500);
+load();
+</script>
+</body>
+</html>

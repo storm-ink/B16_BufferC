@@ -1,0 +1,33 @@
+using BufferC.Core;
+using BufferC.Core.Config;
+using Microsoft.AspNetCore.Builder;
+
+namespace BufferC.Host;
+
+/// <summary>入口：加载配置 → 启动服务 → 等待退出</summary>
+public static class Program
+{
+    public static void Main(string[] args)
+    {
+        string cfgPath = args.Length > 0 ? args[0] : "config.json";
+        if (!File.Exists(cfgPath))
+        {
+            Console.Error.WriteLine($"找不到配置文件: {cfgPath}");
+            Environment.Exit(2);
+        }
+        var cfg = BufferCConfig.Load(cfgPath);
+        using var service = new BufferCService(cfg);
+        service.Start();
+
+        WebApplication? web = null;
+        if (cfg.WebPort > 0) web = WebUi.Start(service, cfg.WebPort);
+
+        var exit = new ManualResetEventSlim(false);
+        Console.CancelKeyPress += (_, e) => { e.Cancel = true; exit.Set(); };
+        Console.WriteLine("按 Ctrl+C 退出");
+        exit.Wait();
+        service.Stop();
+        web?.StopAsync().GetAwaiter().GetResult();
+        Console.WriteLine("BufferC 已停止");
+    }
+}

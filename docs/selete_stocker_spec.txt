@@ -1,0 +1,2298 @@
+Stocker OnlineRequirement Document
+
+              Stocker Online
+        Requirement Document
+
+                                    Version. 2.31
+                                    Feb./8/2002
+
+                                    Issued by Selete
+
+Selete                                                Feb./8/2002
+                                       Stocker Online Requirement Document (Version. 2.31)
+
+                                              Contents
+
+1 Introduction .......................................................................................................................................................................................... 5
+  1.1 Objectives ..................................................................................................................................................................................... 5
+  1.2 Back Ground................................................................................................................................................................................ 5
+  1.3 Reference Documents ................................................................................................................................................................ 6
+
+2 Terminology .........................................................................................................................................................................................7
+
+3 Compliance to SEMI standards ........................................................................................................................................................ 8
+
+  3.1 SECS communication ................................................................................................................................................................ 8
+  3.1.1 HSMS CONNECT MODE ...................................................................................................................................................... 8
+  3.2 Equipment Model ....................................................................................................................................................................... 8
+  3.2.1 State Model List .......................................................................................................................................................................... 9
+  3.2.2 Entities that have State Models ..............................................................................................................................................10
+
+4 Data Items ........................................................................................................................................................................................... 11
+
+  4.1 SECS Data Items ...................................................................................................................................................................... 11
+  4.2 Variable Table ........................................................................................................................................................................... 14
+  4.2.1 VID Assignement of Variables ..............................................................................................................................................14
+  4.2.2 Variables For Stocker............................................................................................................................................................... 15
+  4.2.3 PortTransferState and CurrentPort States ..............................................................................................................................18
+
+5 SECS Messages .................................................................................................................................................................................19
+
+  5.1 Message List ..............................................................................................................................................................................19
+
+6 Remote Commands........................................................................................................................................................................... 27
+
+  6.1 ABORT ...................................................................................................................................................................................... 27
+  6.2 CANCEL.................................................................................................................................................................................... 28
+  6.3 INSTALL ...................................................................................................................................................................................29
+  6.4 LOCATE.................................................................................................................................................................................... 30
+  6.5 PAUSE .......................................................................................................................................................................................31
+  6.6 REMOVE ..................................................................................................................................................................................31
+  6.7 RESUME...................................................................................................................................................................................32
+  6.8 TRANSFER............................................................................................................................................................................... 33
+
+7 Collection Events............................................................................................................................................................................... 35
+
+  7.1 CEID Assignment of Collection Events ............................................................................................................................... 35
+  7.2 Collection Events for Stocker .................................................................................................................................................35
+  7.2.1 Control State Transition Events .............................................................................................................................................35
+  7.2.2 SC State Transtion Events.......................................................................................................................................................36
+
+Selete  -2 -  Feb./8/2002
+                                       Stocker Online Requirement Document (Version. 2.31)
+
+  7.2.3 Transfer Command State Transition Events ........................................................................................................................36
+  7.2.4 Carrier State Transition Events ..............................................................................................................................................36
+  7.2.5 Crane State Transition events .................................................................................................................................................37
+  7.2.6 Other Events ..............................................................................................................................................................................37
+  7.2.7 Port State Transition events .................................................................................................................................................... 37
+  7.3 Event Reports for Stocker .......................................................................................................................................................38
+  7.4 Supplements............................................................................................................................................................................... 40
+  7.4.1 CarrierWaitIn Event .................................................................................................................................................................40
+  7.4.2 ZoneCapacityChange Event ...................................................................................................................................................40
+8 Carrier Location Information.......................................................................................................................................................... 41
+  8.1 Carrier Location Information in SECS Messages............................................................................................................... 41
+  8.1.1 Notation of Carrier Location in SECS Messages................................................................................................................ 41
+  8.1.2 Carrier Location in SECS Message .......................................................................................................................................42
+9 Interpretation of SEMI Standards...................................................................................................................................................44
+  9.1 Control State Model for Stocker ............................................................................................................................................44
+  9.2 VID, SVID and ECID..............................................................................................................................................................45
+10 Distinction from SEMI Standards..............................................................................................................................................46
+
+11 Scenario.......................................................................................................................................................................................... 46
+
+12 Revision History ............................................................................................................................................................................47
+
+Selete  -3 -  Feb./8/2002
+                                       Stocker Online Requirement Document (Version. 2.31)
+
+                                           List of Tables
+
+Table 1 SEMI standards related to SECS communication __________________________________________________ 8
+Table 2 SEMI standards related to Equipment Models ____________________________________________________ 8
+Table 3 SECS Data Items used by Stocker _____________________________________________________________ 11
+Table 4 VID Assignment of Variables _________________________________________________________________ 14
+Table 5 Variables used by Stocker, which are defined by GEM ____________________________________________ 15
+Table 6 Variables used by Stocker, which are defined by Stocker SEM______________________________________ 16
+Table 7 Values of PortTransferState __________________________________________________________________ 18
+Table 8 SECS Messages Used by Stocker ______________________________________________________________ 19
+Table 9CEID Assignment of Collection Events _________________________________________________________ 35
+
+                                           List of Figures
+
+Figure 1 AMHS Framework __________________________________________________________________________ 5
+Figure 2 GEM Capabilities Required by Stocker SEM ____________________________________________________ 9
+Figure 3 Entities that Have State Model _______________________________________________________________ 10
+Figure 4 Model for Stocker and Transfer Port__________________________________________________________ 18
+Figure 5 Control State Model of Stocker _______________________________________________________________ 44
+
+Selete  -4 -  Feb./8/2002
+                                       Stocker Online Requirement Document (Version. 2.31)
+
+1 Introduction
+
+     1.1 Objectives
+
+            This document specifies the Selete requirement for stocker online.
+
+     1.2 Back Ground
+
+                With 300mm semiconductor Fab line of the future, the fully automatic transport of the carrier in a line is
+             demanded as a result of the request about the human engineering and the safety accompanied by the expansion
+             of a wafer size, and the increase of the weight of 300mm wafer carrier . For this reason, AMHS equipment is
+             required to be integrated organically and cost-effectively with a host system.
+
+              In order to attain this purpose, each AMHS equipment must use the common physical and logical interfaces so
+           that AMHS equipment can be interoperable. In order to realize the logical interoperability, I300I and J300
+           proposed AMHS system configuration and AMHS integration system as shown in Figure 1 below at "6.2 AMHS
+           framework" on CIM Global Joint Guidance. They also specified user requirement of AMHS integration system
+           on "AMHS Framework User System requirement Document ".
+
+        Production Equipment Control                   Host System (Supervisor) MES Functions
+
+                                           Standard Communication Protocols,
+                                           Messages, State Models, and Functions
+                                           must be defined.
+
+                                                       AMHS Integration System
+
+                                                IBSEM               StockerSEM                       IBSEM
+
+        Production                              Intrabay Transport                         Stocker        Interbay Transport
+        Equipment                               System Controller                 System Controller       System Controller
+        Control
+        Commands                                Intrabay Transport                  Stocker               Interbay Transport
+                                                      Equipment                   Equipment                     Equipment
+                               Production
+                               Equipment
+
+                                           E84                      E84                              E84
+
+                                                Figure 1 AMHS Framework
+
+Selete                                                 -5 -                                                 Feb./8/2002
+                                 Stocker Online Requirement Document (Version. 2.31)
+
+       The above-mentioned AMHS framework specifies that the stocker should use Stocker SEM (SEMI E88
+    Specification for AMHS Storage SEM) as a communication interface with a host system (AMHS integration
+    system).
+
+       In order to realize the interoperable stocker, Selete has analyzed the above-mentioned "AMHS Framework User
+    System Requirement Document " and "SEMI E88 Specification for AMHS Storage SEM (Stocker SEM)." The
+    result of analysis reveals the following.
+     1) In order to realize interoperability of a communication interface, additional specification is needed for
+
+          Stocker SEM
+     2) Selete's interpretations must be fixed about the ambiguous points of the description of Stocker SEM itself.
+      This specification is intended to realize the online specification of interoperable stocker and to specify the
+    additional Selete specification to Stocker SEM and the Selete interpretation.
+
+1.3 Reference Documents
+
+  Selete AMHS Communications Scenario Document
+  Selete Intrabay/Interbay Transport System Online Requirement Document
+  Selete AMHS Communication Test Specification
+  Selete Integrator Requirement Document
+  I300I / J300 AMHS Framework User System Requirement Document
+
+  SEMI Doc E5 ­ SEMI Equipment Communications Standard2 Message Content (SECSII)
+  SEMI Doc E30 ­ Generic Model for Communications and Control of Manufacturing-
+
+                        Equipment(GEM)
+  SEMI Doc E37 ­ High-Speed SECS Message Services (HSMS) Generic Services
+  SEMI Doc E37.1 ­ HSMS Single Session Mode(HSMS-SS)
+  SEMI Doc E82 ­ Specification for Intrabay/Interbay AMHS SEM(IBSEM)
+  SEMI Doc E88 ­ Specification for AMHS Storage SEM (Stocker SEM)
+
+Selete  -6 -  Feb./8/2002
+                       Stocker Online Requirement Document (Version. 2.31)
+
+2 Terminology
+
+Output Shuttle         It consist of OP (Output shuttle), BP (Buffer Port), and LP (Loading Port).
+                       According to the placement of port, it becomes as it is shown in the following figure.
+
+                        LP        LP       LP                               LP1 LP2
+                        OP        OP       BP                                BP
+                                           OP                                OP
+                       1 port   2 ports
+                                         3 ports                            4 ports
+
+Input shuttle          It consists of EP (Entering Port), BP (Buffer Port), and CP (Crane accessible Port).
+                       According to the number of ports, it becomes as it is shown in the following figure..
+Remote Command
+Buffer Port             EP      EP       EP
+Crane Accessible Port   CP      CP       BP
+Entering Port                            CP
+Loading Port           1 ports  2 ports
+Output Port                              3 ports
+Transfer Port
+                       It refers to "remote command" that is specified by Stocker SEM. TRANSFER
+                       command is one of the remote commands.
+                       The location for the buffering at input and output of stocker.
+                       The port location that can be access ed by the stocker crane at the input shuttle of
+                       stocker.
+                       The port location that can be accessed by the operat or or the vehicle at the input
+                       shuttle of stocker.
+                       The port location that can be access ed by the operator or the vehicle at the output
+                       shuttle of stocker.
+                       The port location that can be access ed by the stocker crane at the output shuttle of
+                       stocker.
+                       The location on the transport system at which a change of equipment ownership of
+                       the carrier occurs. Transfer Posts in a stocker are Entering Port. (EP) and Loading
+                       Port (LP).
+
+Selete                          -7 -                                        Feb./8/2002
+                        Stocker Online Requirement Document (Version. 2.31)
+
+3 Compliance to SEMI standards
+
+     3.1 SECS communication
+
+Ø SECS communication between a stocker controller (SC) and a host system must be based on the following SEMI
+      standards.
+
+        SEMI Standards  SEMI Equipment Communications Standard2 Message Content (SECSII)
+        SEMI Doc E5     High-Speed SECS Message Services(HSMS) Generic Services
+        SEMI Doc E37    HSMS Single Session Mode(HSMS-SS)
+        SEMI Doc E37.1
+
+                        Table 1 SEMI standards related to SECS communication
+
+          3.1.1 HSMS CONNECT MODE
+
+                  · HSMS Connect Mode is required to perform in both active and passive mode.
+
+     3.2 Equipment Model
+
+Ø A stocker controller (SC) must implement the equipment model based on the following SEMI standards.
+
+        SEMI Standards  The Standard of SEMI is specified in the following sections listed in the standard of Generic
+        SEMI Doc E30    Equipment Model(GEM)
+                        Chapter 1,2,3: All sections
+        SEMI Doc E88    Chapter 4: Section 4.1,4.2.1,4.2.2,4.2.5,4.2.6,4.3,4.5,4.7,4.8,4.9,4.10,4.12
+                        Chapter 8: All sections
+                        Specification for AMHS Storage SEM(Stocker SEM)
+
+                        Table 2 SEMI standards related to Equipment Models
+
+        [Note 1]
+         Ø The "14 GEM Capabilities" of Stocker SEM specifies GEM function specified by Stocker SEM.
+
+                  Refer to the table on the following page. When we show the description of performance that is
+                  marked by X, among the fundamental GEM requirements and the additional capabilities in the table
+                  on the following table, then the result will be as, shown in the above-mentioned table.
+
+Selete                  -8 -                                                                           Feb./8/2002
+           Stocker Online Requirement Document (Version. 2.31)
+
+           GEM fundamental requirements                         Additional capabilities
+        State Model
+        Equipment Processing State                  Establish Communications                    X
+        Host-initiated S1F13/F14 Scenario
+        Event report                                Dynamic Event Report Configuration X
+        Online Confirmation
+        Error Message                               Variable Data Collection
+        Control(operator-initiated)
+        Documentation                               Trace Data Collection
+
+                                                    Status Data Collection                      X
+
+                                                    Alarm Management                            X
+
+                                                    Remote Control
+
+                                                    Equipment Constants                         X
+
+                                                    Process Program Management
+
+                                                    Material Movement                           X
+
+                                                    Equipment Terminal Service                  X
+
+                                                    Clock                                       X
+
+                                                    Limits Monitoring
+
+                                                    Spooling
+
+                                                    Control(host-initiated)                     X
+
+           Figure 2 GEM Capabilities Required by Stocker SEM
+
+        3.2.1 State Model List
+
+        Ø  The state models that SC should implement are described in both SEM and GEM, and since they are
+
+           incomprehensible, they are listed here.
+
+           1) Communication state model (refer to GEM 3.2 Communication State model)
+
+           2) Control state model (refer to GEM 3.3 Control State model)
+
+           3) SC state model (refer to SEM 8.2 SC State Model)
+
+           4) Transfer command state model (refer to SEM 8.3 TRANSFER Command State Model)
+
+           5) Carrier state model (refer to SEM 8.4 Stocker Carrier State Model)
+
+           6) Crane state model (refer to SEM 8.5 Stocker Crane State Model)
+
+        Ø In addition to these, SC has the state model of HSMS-SS.
+              (Refer to 5. "Summary and State Machine of HSMS-SS" in "SEMI DOC.E37.1 HSMS-SS")
+
+Selete                                              -9 -                                        Feb./8/2002
+                                   Stocker Online Requirement Document (Version. 2.31)
+
+        3.2.2 Entities that have State Models
+
+        Ø The entity that owns the above-mentioned state model is shown in the following figures. For example, the
+              above-mentioned 3) SC state model has one model for one SC. The 5) Carrier state model has one model
+              for each carrier within a stocker. In that sense, the entity that owns SC state model is SC, while the entity
+              that owns a carrier state model is a carrier.
+                This shows how it should be seen from a host, and it is outside this specification whether or not it is
+              implemented actually in this way.
+
+        Stocker                                CONTROL
+                                                   SC
+                    SC
+                              HSMS
+
+                         Communicaion
+
+        Carrier                                Transfer Command
+                Carrier                          Transfer Command
+
+        Crane                                  Port
+                Crane                                    Port
+
+                         Figure 3 Entities that hav e State Model
+
+Selete                                 - 10 -                      Feb./8/2002
+                                     Stocker Online Requirement Document (Version. 2.31)
+
+4 Data Items
+
+    This chapter explains SECS message data item thatis used by the stocker.
+
+     4.1 SECS Data Items
+
+        The data items of SECS message that are used by the stocker is shown in next table.
+
+        Item description of a table
+
+        Name    : The name of a data item
+
+        Format  : The format of the value of a data item
+
+        Size : The size of the value of a data item
+
+        Description : Description of a data item, or the range of data value
+
+                                     Table 3 SECS Data Items used by Stocker
+
+      Name             Format         Size                                         Description
+ACKC5           B                    1
+ACKC6           B                    1               0=Accepted >0=Error, Not accepted 1-63 Reserved
+ACKC10          B                    1               0=Accepted >0= Error, Not accepted 1-63 Reserved
+ALCD                                                 0=Accepeted 1=Meesages will not be displayed
+                B                    1               2=Terminal not available 3-63 Reserved
+ALED
+ALID            B                    1               bit8=1 Alarm Set
+ALTX            U4                                   bit8=0 Alarm Cleared
+CEED            A                    Max40           bit1-7=0 Alarm not in use
+CEID            BOOLEAN              1
+CEPACK          U4                                   bit8=1 Enable Alarm bit8=0 Disable Alarm
+                L,U1                                 Alarm identification
+CEPVAL                                               Alarm text limited to 40 characters
+COMMACK         A,B,BOOLEAN,                         False = Disable True = Enable
+CPACK           Fx,Ix,J,L,Ux                         Collected Event ID
+                B                                    0=No Error
+CPNAME          B                                    1=Parameter name (CPNAME) does not exist
+CPVAL                                                2= Illegal value specified for CEPVAL
+DATAID          A                                    3=Illegal value specified for CEPVAL
+                A,B,BOOLEAN,                         4=Parameter name (CPNAME) not valid as used
+                Fx,Ix,J,Ux                           Command Enhanced Parameter Value
+                U4
+                                     1               0=Accepted 1=Denied,Try Again 2-63 Reserved
+                                     1               0=Accepeted
+                                                     1= Parameter name (CPNAME) does not exist
+                                     Max40           2=Illegal value specified for CPVAL
+                                                     3=Illegal format specified for CPVAL
+                                                     >3=Other equipment-specific error 4-63 Reserved
+
+                                                     Command Parameter Name
+                                                     Command Parameter value
+
+                                                     Data ID
+                                                     Integrator normally send messages with DATAID=0
+
+Selete                                               - 11 -                                  Feb./8/2002
+            Stocker Online Requirement Document (Version. 2.31)
+
+      Name         Format   Size                                Description
+DRACK       B              1
+                                  0=Accepted
+EAC         B              1      1=Denied,Insufficient space
+                                  2=Denied,Invalid format
+ECDEF       A,B,BOOLEAN,          3=Denied,At least one RPTID already defined
+ECID        Fx,Ix,J,Ux            4=Denied,At least VID does not exist
+ECMAX       U4                    >4=Other errors 5-63 Reserved
+ECMIN       A,B,BOOLEAN,
+ECNAME      Fx,Ix,J,Ux            0=Accepted
+ECV         A,B,BOOLEAN,          1=Denied,At least one constant does not exist
+ERACK       Fx,Ix,J,Ux            2=Denied,Busy
+HCACK       A                     3=Denied,At least one constant out of range
+            A,B,BOOLEAN,          >3=Other equipment ­ specific error 4-63Reserved
+LRACK       Fx,Ix,J,Ux
+            B                     Equipment constant default value
+MDLN        B
+MEXP                              Equipment constant ID
+MHEAD       B                     Equipment constant maximum value
+OBJSPEC
+OFLACK      A                     Equipment constant minimum value
+            A
+            B                     Equipment constant name
+            A
+            B                     Equipment constant value
+
+                           1      0=Accepted
+
+                                  1=Denied,At least one CEID does not exist
+
+                                  >1=Other Errors 2-63 Reserved
+
+                           1      0=Acknowledge,command has been performed
+
+                                  (Stocker will use value of 4 instead of 0)
+
+                           1      1=Command does not exist
+                           Max6   2=Can not perform now
+                                  3=At least one parameter is invalid
+                                  4=Acknowledge,Command will be performed with completion
+                                  signaled later by an event
+                                  5=Rejected,Already in desired condition
+                                  6=No such object exists
+                                  7-63 Reserved
+                                  0=Accepted
+                                  1=Denied,Insufficient space
+                                  2=Denied,Invalid format
+                                  3=Denied,At least one CEID link already denied
+                                  4=Denied,At least one CEID does not exist
+                                  5=Denied,At least one RPTI D does not exist
+                                  >5= Other errors 6-63 Reserved
+
+                                  Equipment model type, 6 bytes max
+                                  SxxFyy
+
+                                  SECS message block header associated with message block in
+                                  error
+                                  A test string that has an internal format and that is used to point
+                                  to a specific object instance
+                                  Integrator always have to set "Null" for OBJSPEC and send it
+                                  0=Off-line Accepted 1-63Reserved
+
+Selete                            - 12 -                                      Feb./8/2002
+            Stocker Online Requirement Document (Version. 2.31)
+
+      Name         Format   Size                                Description
+ONLACK      B              Max6
+                                  0=Off-line Accepted
+RCMD        A                     1=On-line not allowed
+RPTID       U4                    2=Equipment already On-line
+SHEAD       B                     3-63Reserved
+SOFTREV     A
+SV          A,B,BOOLEAN,          Remote command code or string
+            Fx,Ix,J,L,Ux          Report ID
+SVID        U4                    Stored header related to the transaction timer
+SVNAME      A                     Software revision code
+TEXT        A                     Status variable value
+TIACK       B
+                                  Status variable ID
+TID         B
+                                  Status variable name
+TIME        A
+UNITS       A                     Single line of characters
+V           A,B,BOOLEAN,
+            Fx,Ix,J,L,Ux   1      Equipment Acknowledgement code
+VID         U4
+                                  0=Correct 1=Error,Too many SVIDs 2-63 Reserved
+
+                           1      0=Single or main terminal >0=Additional terminals at the same
+
+                                  equipment
+
+                           16     YYYYMMDDhhmmsscc
+
+                                  As allowed by SEMI E5 Section 9
+
+                                  Variable data
+
+                                  Variable
+
+Selete                            - 13 -                                          Feb./8/2002
+        Stocker Online Requirement Document (Version. 2.31)
+
+4.2 Variable Table
+
+              This section explains the variable and VID of stocker.
+
+        4.2.1 VID Assignement of Variables
+
+             The number system of VID that is assigned to the variable of stocker is shown in next table.
+                                      Table 4 VID Assignment of Variables
+
+        Variable type                                                 VID
+
+        VID assigned by Selete Spec.                                   1--300
+           Variable defined by GEM                                     1--50
+           Variable defined by SEM                                    51--200
+                                                                      201--300
+        Variable defined by Selete Spec.                               301--
+         VID assigned by Supplier
+
+        Note: Even if it is the variable defined by GEM or SEM, when VID is not defined by Selete
+
+        specification but VID is defined uniquely by the supplier, the number after No. 301 is
+
+        assigned.
+
+Selete                 - 14 -                                                                              Feb./8/2002
+                                                                Stocker Online Requirement Document (Version. 2.31)
+
+        4.2.2 Variables For Stocke r
+
+              The variable for stocker is shown below.
+
+               Item description of a table
+
+                      VID                   : ID of a variable
+
+                      Variable name : The name of a variable
+
+                      Class                 : The class of a variable data
+
+                      Format                : The format of a variable data
+
+                      Description           : Description of a variable
+
+                                            Table 5 Variables used by Stocker, which are defined by GEM
+
+VID Variable Name                           Class               Format                  Description
+
+1       AlarmID                             DVVAL               <U4>                    Alarm ID
+                                            ECV                 <U2>                    Time Interval for sending a S1F13 message when establishing
+2       EstablishCommunicationsTimeout                                                  communication
+                                                                                        Enable Alarm list
+3       AlarmsEnabled                       SV                  <L <ALID> ...>          ACTIVE Alarm list
+                                                                                        Current Time
+4       AlarmsSet                           SV                  <L <ALID> ...>          1=Off-line/Equipment Off-line
+                                                                                        2=Off-line/in the process of Off-line
+5       Clock                               SV                  <A[16]>                 3=Off -line/Host Off-line
+                                                                                        4=On-line/Local
+6       ControlState                        SV                  B,U1                    5=On-line/Remote
+                                                                                        Enabled event list
+7       EventsEnabled                       SV                  <L <CEID> ...>
+
+Selete                                                                          - 15 -                               Feb./ 8/200 2
+                             Stocker Online Requirement Document (Version. 2.31)
+
+                      Table 6 Variables used by Stocker, which are defined by Stocker SEM
+
+  VID Variable Name   Class  Format                         Description
+  51 ActiveCarriers
+  52 ActiveTransfers  SV     <L <CarrierInfo> ...>          List current status of all carrier information in the SC Database
+  53 ActiveZones      SV     <L <TransferCommand> ...>      List current status of all active transfer commands
+                      SV     <L <ZoneData> ...>
+  54 CarrierID                                              List current status associated with all zones being used by the
+  55 CarrierInfo      DVVAL <A[1..64]>                      SC
+  56 CarrierLoc       DVVAL <L[2] <CarrierID><CarrierLoc>>  Unique ID of carrier
+                      DVVAL <A[1..64]>                      All database information associated with a particular carrier
+  57 CommandName
+  58 CommandID        DVVAL <A[1..20]>                      Unique location of he carrier within the stocker as reported by
+  59 CommandInfo      DVVAL <A[1..64]>                      the SC
+                      DVVAL <L[2] <CommandID><Priority>>    Name of Host issued remote command
+  60 Dest
+  61 EmptyCarrier     DVVAL <A[1..64]>                      Remote Command ID
+                      DVVAL <U2>                            Command information associated with a particular transfer
+  62 EqpName                                                command
+  63 ErrorID          ECV <A[1..32]>                        Destination location identifier
+  64 HandoffType      DVVAL <A[1..64]>
+                      DVVAL <U2>                            Flag which denotes whether the carrier is empty or not empty
+  65 IDReadStatus                                           0=Empty 1=Not Empty
+                      DVVAL <U2>                            Unique ID of the SC
+  66 PortType
+                      DVVAL <A[1..32]>                      Unique ID of an error
+  67 Priority
+                      DVVAL <U2>                            Denotes the type of handoff that occurred at the equipment
+  68 RecoveryOptions                                        ownership transfer point 1=MANUAL2=AUTOMATED
+                      DVVAL <A[1..64}>                      Result Code of an ID read event
+  69 ResultCode                                             0=Success 1=Failure 2=Duplicate 3=Mismatch
+                      DVVAL <U2>                            Definition of the type of port associated with the carriers
+  70 Source                                                 current location OP/BP/LP
+  71 StockerUnitID    DVVAL <A[1..64]>                      Remote command priority
+                                                            1--99 Available for use 1:Lowest,99:Highest
+Selete                SV     <A[1..32]>                     List of options that the Host may use to try to recover specific
+                                                            stocker error
+                                                            Result code of a stocker system command associated with the
+                                                            command completion event
+                                                            Source location unique identifier
+
+                                                            Unique identification of a stocker unit (Port, Transfer agent)
+
+                                         - 16 -                                            Feb./ 8/200 2
+                              Stocker Online Requirement Document (Version. 2.31)
+
+72      StockerUnitInfo   DVVAL <L[2] <StockerDeviceID>               Information associated with a particular stocker unit
+                                            <StockerDeviceState>>
+73      StockerUnitState                                              The state of the stocker unit
+                          DVVAL <U2>                                  Information associated with a particular Transfer command
+74 TransferCommand        DVVAL <L[2] <CommandInfo> <TransferInfo>>   Carrier information associated with a particular Transfer
+                          DVVAL <L[3] <CarrierID><CarrierLoc><Dest>>  command
+75 TransferInfo                                                       Available capacity of a particular zone
+                                                                      Information associated with a particular zone
+76 ZoneCapacity           DVVAL <U2>                                  Alphanumeric name of a particular zone
+77 ZoneData                                                           SCState
+78 ZoneName               DVVAL <L[2] <Z oneName><ZoneCapacity>>      1=SCInit, 2=Paused, 3=Auto, 4=Pausing
+79 SCState                                                            Transfer Port ID
+                          DVVAL <A[1..64]>                            The IDs and state of all Ports in a stocker are returned.
+
+                          SV  <U2>
+
+80 PortID                 DVVAL <A[1..64]>
+81 CurrentPortStates
+                          SV  <L
+
+                                  <L[2]
+
+                                       <A[1..64] PortID>
+
+                                       <U2 PortTransferState>
+
+                                  >
+
+                                  ...
+
+                              >
+
+Selete                                                    - 17 -                   Feb./ 8/200 2
+                                    Stocker Online Requirement Document (Version. 2.31)
+
+        4.2.3 PortTransferState and CurrentPortStates
+
+        PortTransferStaterepresents a state t hat Transfer Port has.
+        CurrentPortStates is a list of "PortID" and "PortTransferState" in all TransferPorts that a Stocker has.
+
+                           Stocker                        Transfer Port
+
+                                    1             1..*
+
+                                                          PortIDi
+
+                                                          SV Input&Output PortID
+
+                                                          PortStatei
+
+                                                          SV Port State
+
+                                 Figure 4 Model for Stocker and Transfer Port
+        The values that PortTransferStatecan take are shown in the following table.
+
+                                    Table 7 Values of PortTransferState
+
+             Variable      Value        State           A state in which input/output to and from the shelf can
+        PortTransferState    2                          be performed normally.
+                                       Normal           An abnormal state
+                             1        InService         Even when a carrier input from or output to the
+                                      Abnormal          Transfer Port cannot be performed due to irregularities
+                                    OutOfService        in portions other than the Transfer Port, SC regards the
+                                                        Transfer Port's PortTransferState as irregular.
+                                                        Example: When BP fails at an output port, SC regards
+                                                        the related LP1 and LP2 as out -of-service respectively,
+                                                        and performs an event-reporting.
+                                                        (See below)
+
+                                                                         LP1 LP2
+                                                                          BP
+                                                                         OP
+
+Selete                                                                               Feb./8/2002
+
+                                                  - 18 -
+                                     Stocker Online Requirement Document (Version. 2.31)
+
+5 SECS Messages
+
+    This chapter explainsthe stream and the function of SECS message thatare used by the stocker.
+
+     5.1 Message List
+
+             SECS message that is supported by the stocker as a minimum is shown in the next table. A Selete's assuming
+          integrator supports SECS messages that are marked by "X" in the column of "Use" in the table.
+
+        Item description of a table
+
+        SECS                         : The stream and the function of a message.
+
+        Use                          : The message used by a Selete's assuming integrator is marked with "X."
+
+        Transmission                 : The message sent to a Stocker from an integrator is marked with "H."
+
+                                     The message sent to an integrator from a Stocker is marked with "E."
+
+        Format                       : The message format that is shown in the message definition of SEMI E5.
+
+        Example of data : The example of data of a message is described in SML* format.
+
+                                     Table 8 SECS Messages Used by Stocker
+
+SECS    Use Send                     Format                                 Example
+S1F1
+S1F2    X H,E S1F1 W                         S1F1 W
+                      . /* Header only */    .
+S1F3                                         S1F2
+        X H S1F2                             <L>.
+                      <L>.
+                                             S1F2
+        X E S1F2                             <L [2]
+                      <L [2]
+                          <A MDLN >              <A 'AMHS'>
+                          <A SOFTREV >           <A 'VER1.0'>
+                      >.                     >.
+
+        XH        S1F3 W                     S1F3 W
+                  <L                         <L [2]
+
+                      <U4 SVID>                 <U4 6> /* ControlState */
+                      ...                       <U4 5> /* Clock */
+                  >.                         >.
+
+*SML (r) is a registered trademark, and SECS Message Language (tm) is atrademark of GW Associates, Inc.
+
+Selete                                                                                                   Feb./8/2002
+
+                                             - 19 -
+                            Stocker Online Requirement Document (Version. 2.31)
+
+SECS    Use Send            Format                                    Example
+S1F4
+        XE        S1F4                S1F4
+                  <L                  <L [2]
+
+                      <SV>                 <U1 5> /* ControlState */
+                      ...                  <A[16] `2002011710334600'> /* Clock */
+                  >.                  >
+
+S1F11   -H        S1F11 W             S1F11 W
+S1F12   -E        <L                  <L [1]
+
+                      <U4 SVID>           <U4 6> /* SVID(ControlState) */
+                      ...             >.
+                  >.
+                  S1F12               S1F12
+                  <L                  <L [1]
+                      <L [3]
+                                          <L [3]
+                          <U4 SVID>           <U4 6> /* SVID */
+                          <A SVNAME>          <A 'ControlState'> /* SVNAME */
+                          <A UNITS>          <A ''> /* UNITS */
+                      >
+                      ...                 >
+                  >.                  >.
+
+S1F13   XH        S1F13 W             S1F13 W
+                  <L>.                <L>.
+
+Selete                                - 20 -                                     Feb./8/2002
+                                 Stocker Online Requirement Document (Version. 2.31)
+
+SECS    Use Send                 Format                                   Example
+
+S1F14   XE        S1F13 W                  S1F13 W
+        XH        <L [2]                   <L [2]
+S1F15
+S1F16                 <A MDLN>                 <A 'AMHS'>
+S1F17                 <A SOFTREV>              <A 'VER1.0'>
+S1F18             >.                       >.
+S2F13                                      S1F14
+S2F14             S1F14                    <L [2]
+S2F15             <L [2]                       <B 0x00>
+                                               <L>
+S2F16                 <B COMMACK>          >.
+S2F17                 <L>
+S2F18             >.                       S1F14
+S2F29                                      <L [2]
+        XE        S1F14
+                  <L [2]                       <B 0x00>
+                                               <L [2]
+                      <B COMMACK>
+                      <L [2]                       <A 'AMHS'>
+                                                   <A 'VER1.0'>
+                          <A MDLN>         >.
+                          <A SOFTREV>
+                  >.                       S1F15 W
+                                           .
+        XH        S1F15 W                  S1F16
+                  . /* Header only */      <B 0x00>.
+                                           S1F17 W
+        XE        S1F16                    .
+                  <B OFLACK>.              S1F18
+                                           <B 0x00>.
+        XH        S1F17 W
+                  . /* Header only */      S2F13 W
+                                           <L [1]
+        XE        S1F18
+                  <B ONLACK>.                  <U4 2> /* ECID(Establish Communication Timeout) */
+                                           >.
+        -H        S2F13 W
+                  <L                       S2F14
+                                           <L [1]
+                      <U4 ECID>
+                      ...                     <U2 10> /* ECV */
+                  >.                       >.
+
+        -E        S2F14                    S2F15 W
+                  <L                       <L [1]
+
+                      <Ux ECV>                 <L [2]
+                      ...                  <U4 2> /* ECID(Establish Communication Timeout) */
+                  >.
+                                                  <U2 20> /* ECV */
+        -H        S2F15 W                      >
+                  <L                       >.
+
+                      <L [2]               S2F16
+                          <U4 ECID>        <B 0x00>.
+                          <Ux ECV>         S2F17 W
+                                           .
+                      >                    S2F18
+                      ...                  <A '1999123123595999'>.
+                  >.                       S2F29 W
+                                           <L [1]
+        -E        S2F16                    <U4 2> /* ECID(Establish Communication Timeout) */
+                  <B EAC>.                 >.
+
+        X HE S2F17 W
+                      . /* Header only */
+
+        X HE S2F18
+                      <A TIME>.
+
+        -H        S2F29 W
+                  <L
+
+                      <U4 ECID>
+                      ...
+                  >.
+
+Selete                                                                                Feb./8/2002
+
+                                           - 21 -
+                  Stocker Online Requirement Document (Version. 2.31)
+
+SECS    Use Send  Format                                                    Example
+S2F30
+        -E        S2F30                      S2F30
+S2F31             <L                         <L [1]
+S2F32   -H
+S2F33   -E            <L [6]                     <L [6]
+                          <U4 ECID>                  <U4 2> /* ECID */
+                          <A ECNAME>
+                          <Ux ECMIN>         <A 'Establish Communications Timeout'>
+                          <Ux ECMAX>                           /* ECNAME */
+                          <Ux ECDEF>
+                          <A UNITS>                 <U2 0> /* ECMIN */
+                                                    <U2 XXX> /* ECMAX */
+                      >                             <U2 10> /* ECDEF */
+                      ...                           <A ''> /* UNITS */
+                  >.                         >.
+                  S2F31 W
+                  <A TIME>.                  S2F31 W
+                                             <A '1999123123595999'>.
+                  S2F32                      S2F32
+                  <B TIACK>.                 <B 0x00>.
+
+        XH        S2F33 W                    S2F33 W
+                  <L [2]                     <L [2]
+
+                      <U4 DATAID>                <U4 0> /* DATAID */
+                      <L                        <L [2] /* Two kinds of report format */
+
+                          <L [2]                     <L [2]
+                               <U4 RPTID>                 <U4 1> /* RPTID */
+                               <L                        <L [1]
+                                   <U4 VID>                   <U4 62> /* VID(EqpName) */
+                                   ...                    >
+                               >
+                                                     >
+                          >                          <L [2]
+                          ...
+                      >                                   <U4 2> /* RPTID */
+                  >.                                     <L [2]
+
+S2F34   XE        S2F34                                       <U4 62> /* VID(EqpName) */
+S2F35   XH        <B DRACK>.                                  <U4 74> /* VID(TransferCommand) */
+                                                          >
+                  S2F35 W                            >
+                  <L [2]                         >
+                                             >.
+                     <U4 DATAID>
+                     <L                      S2F34
+                                             <B 0x00>.
+                        <L [2]
+                           <U4 CEID>         S2F35 W
+                           <L                <L [2]
+                               <U4 RPTID>
+                               ...               <U4 0> /* DATAID */
+                           >                    <L [2] /* Two types of event */
+
+                        >                            <L [2]
+                        ...                               <U4 3> /* CEID(Control State Remote) */
+                     >                                   <L [1]
+                  >.                                          <U4 1> /* RPTID */
+                                                          >
+
+                                                     >
+                                                     <L [2]
+
+                                                          <U4 108> /* CEID(TransferInitiated) */
+                                                         <L [2]
+
+                                                              <U4 1> /* RPTID */
+                                                          >
+                                                     >
+                                                 >
+                                             >.
+
+Selete                                                                               Feb./8/2002
+
+                                             - 22 -
+                  Stocker Online Requirement Document (Version. 2.31)
+
+SECS    Use Send  Format                                                  Example
+S2F36
+S2F37   XE        S2F36                    S2F36
+        XH        <B LRACK>.               <B 0x00>.
+S2F38             S2F37 W                  S2F37 W
+S2F41   XE        <L [2]                   <L [2]
+        XH
+                      <BOOLEAN CEED>          <BOOLEAN T> /* CEED */
+                      <L                      <L [2] /* Two types of event */
+
+                          <U4 CEID>                <U2 4> /* CEID(Control State Remote) */
+                          ...                      <U4 108> /* CEID(TransferInitiated) */
+                      >                        >
+                  >.                       >.
+                  S2F38                    S2F38
+                  <B ERACK>.               <B 0x00>.
+                                           S2F41 W
+                  S2F41 W                  <L [2]
+                  <L [2]                      <A 'CANCEL'> /* RCMD */
+                                               <L [1]
+                      <A RCMD>                     <L [2]
+                      <L
+                                                       <A 'COMMANDID'> /* CPNAME */
+                          <L [2]                       <A '1999110112000000'> /* CPVAL */
+                               <A CPNAME>          >
+                               <A CPVAL>       >
+                                           >.
+                          >
+                          ...
+                      >
+                  >.
+
+S2F42 X E         S2F42                    /*No Error exist
+                  <L [2]                   S2F42
+                                           <L [2]
+                      <B HCACK>
+                      <L                      <B 0x00> /* HCACK */
+                                               <L [0]
+                          <L [2]               >
+                                           >.
+                               <A CPNAME>
+                               <B CPACK>   /*Invalid parameter exist
+                          >                S2F42
+                          ...              <L [2]
+                      >
+                                               <B 0x03> /* HCACK */
+                  >.                           <L [1]
+
+                                                   <L [2]
+                                                       <A 'CPNAME1'> /* CPNAME */
+                                                       <B 0x01> /* CPACK */
+
+                                                   >
+                                               >
+                                           >.
+
+Selete                                                                 Feb./8/2002
+
+                                           - 23 -
+                  Stocker Online Requirement Document (Version. 2.31)
+
+SECS    Use Send  Format                                                  Example
+S2F49
+        XH        S2F49 W                  S2F49 W
+                  <L [4]                   <L [4]
+
+                      <U4 DATAID>              <U4 0 > /* DATAID */
+                      <A OBJSPEC>             <A ''> /* OBJSPEC */
+                      <A RCMD>                <A 'TRANSFER'> /* RCMD */
+                      <L                       <L [2]
+
+                          <L [2]                   <L [2]
+                               <A CPNAME>              <A 'COMMANDINFO'>
+                               <CEPVAL>                <L [2]
+                                                            <L [2]
+                          >                                     <A 'COMMANDID'>
+                          ...                                   <A '000001'>
+                      >                                     >
+                  >.                                        <L [2]
+                                                                <A 'PRIORITY'>
+                                                                <U2 5>
+                                                            >
+                                                        >
+
+                                                   >
+                                                   <L [2]
+
+                                                       <A 'TRANSFERINFO'>
+                                                       <L [3]
+
+                                                            <L [2]
+                                                                <A 'CARRIERID'>
+                                                                <A 'Carrier1'>
+
+                                                            >
+                                                            <L [2]
+
+                                                                <A 'CARRIERLOC'>
+                                                                <A 'CarrierLoc1'>
+                                                            >
+                                                            <L [2]
+                                                                <A 'DEST'>
+                                                                <A 'CarrierLoc2'>
+                                                            >
+                                                        >
+                                                   >
+                                               >
+                                           >.
+
+S2F50 X E         S2F50                    /*No error exist
+                  <L [2]                   S2F50
+                                           <L [2]
+                      <B HCACK>
+                      <L                      <B 0x00> /* HCACK */
+                                               <L [0]
+                          <L [2]               >
+                               <A CPNAME>  >.
+                               <CEPACK>
+                                           /*Invalid parameter exist
+                          >                S2F50
+                          ...              <L [2]
+                      >
+                  >.                           <B 0x03> /* HCACK */
+                                               <L [1]
+
+                                                   <L [2]
+                                                        <A 'PRIORITY'>
+                                                        <U1 2> /* CEPACK */
+
+                                                   >
+                                               >
+
+Selete                                                                       Feb./8/2002
+
+                                           - 24 -
+               Stocker Online Requirement Document (Version. 2.31)
+
+SECS Use Send  Format                                  Example
+                                        >.
+
+S5F1 X E S5F1 W                                S5F1 W
+                           <L [3]              <L [3]
+                               <B ALCD>
+                               <U4 ALID>          <B 0x80> /* ALCD */
+                               <A ALTX>            <U4 1> /* ALID */
+                           >.                     <A 'ALARM TEXT'> /* ALTX */
+                                               >.
+S5F2 X H S5F2
+                           <B ACKC5>.          S5F2
+                                               <B 0x00>.
+S5F3 X H S5F3 W                                S5F3 W
+                           <L [2]              <L [2]
+                               <B ALED>
+                               <U4 ALID>          <B 0x80> /* ALED */
+                           >.                      <U4 1> /* ALID */
+                                               >.
+S5F4 X E S5F4
+                           <B ACKC5>.          S5F4
+                                               <B 0x00>.
+S5F5 - H S5F5 W
+                           <U4 ALID ...>.      S5F5 W
+                                               <U4 [2] 1 2>. /* Two ALIDs */
+S5F6 - E S1F12 W
+                           <L                  S1F12 W
+                               <L [3]          <L [2]
+                                    <B ALCD>
+                                    <U4 ALID>      <L [3]
+                                    <A ALTX>          <B 0x80> /* ALCD */
+                               >                       <U4 1> /* ALID */
+                               ...                    <A 'ALARM TEXT'> /* ALTX */
+                           >.
+                                                   >
+                                                   <L [3]
+
+                                                      <B 0x00> /* ALCD */
+                                                       <U4 2> /* ALID */
+                                                      <A 'ALARM TEXT2'> /* ALTX */
+                                                   >
+                                               >.
+
+Selete                                                              Feb./8/2002
+
+                                               - 25 -
+                            Stocker Online Requirement Document (Version. 2.31)
+
+SECS    Use Send            Format                                        Example
+S6F11
+        XE        S6F11 W                  S6F11 W
+S6F12             <L [3]                   <L [3]
+S9F1    XH
+S9F3    XE            <U4 DATAID>              <U4 0> /* DATAID */
+S9F5    XE            <U4 CEID>                <U4 3> /* CEID(Control State Remote) */
+S9F7                  <L                       <L [1]
+S9F9
+S9F11                     <L [2]                  <L [2]
+S10F3                          <U4 RPTID>               <U4 1> /* RPTID */
+                              <L                        <L [1]
+S10F4                              <V>                     <A 'AMHS001'> /* V(EqpName) */
+                                   ...                  >
+                               >
+                                                   >
+                          >                    >
+                          ...              >.
+                      >
+                  >.                       S6F12
+                  S6F12                    <B 0x00>.
+                  <B ACKC6>.               S9F1
+                  S9F1                     <B 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00>.
+                  <MHEAD>.                 S9F3
+                                           <B 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00>.
+                  S9F3
+                  <MHEAD>.                 S9F5
+                                           <B 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00>.
+        XE        S9F5                     S9F7
+        XE        <MHEAD>.                 <B 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00>.
+        XE                                 S9F9
+                  S9F7                     <B 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00>.
+                  <MHEAD>.                 S9F11
+                                           <B 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00>.
+                  S9F9
+                  <SHEAD>.                 S10F3 W
+                                           <L [2]
+        XE        S9F11
+                  <MHEAD>.                     <B 0x00> /* TID */
+                                              <A 'SCREEN TEXT'> /* TEXT */
+        XH        S10F3 W                  >.
+                  <L [2]
+                                           S10F4
+                      <B TID>              <B 0x00>.
+                      <A TEXT>
+                  >.
+
+        XE        S10F4
+                  <B ACKC10>.
+
+Selete                                                                           Feb./8/2002
+
+                                           - 26 -
+                                       Stocker Online Requirement Document (Version. 2.31)
+
+6 Remote Commands
+
+    This chapter explains the remote command thatis supported by the stocker.
+
+6.1 ABORT              Format                            CPVAL
+                      A[1..64]                                 Comment
+              CPNAME
+       COMMANDID                Command parameter name for transfer remote command
+
+        SECS communication format
+
+             S2F41 W
+             <L [2]
+
+                 <A 'ABORT'> /* RCMD */
+                 <L [1]
+
+                     <L [2]
+                         <A 'COMMANDID'> /* CPNAME */
+                         <A CommandID> /* CPVAL */
+
+                      >
+                 >
+             >.
+
+             S2F42
+             <L [2]
+
+                 <B 0x00> /* HCACK */
+                 <L [0]
+                 >
+             >.
+
+Selete                                                                                      Feb./8/2002
+
+                                - 27 -
+                      Stocker Online Requirement Document (Version. 2.31)
+
+6.2 CANCEL             Format                            CPVAL
+                      A[1..64]                                 Comment
+              CPNAME
+       COMMANDID                Command parameter name for transfer remote command
+
+        SECS Communication format
+
+             S2F41 W
+             <L [2]
+
+                 <A 'CANCEL'> /* RCMD */
+                 <L [1]
+
+                      <L [2]
+                         <A 'COMMANDID'> /* CPNAME */
+                          <A CommandID> /* CPVAL */
+
+                      >
+                  >
+             >.
+
+             S2F42
+             <L [2]
+
+                 <B 0x00> /* HCACK */
+                 <L [0]
+                  > >.
+
+Selete                                                                     Feb./8/2002
+
+                                - 28 -
+                      Stocker Online Requirement Document (Version. 2.31)
+
+6.3 INSTALL            Format                            CPVAL                                 Carrier
+                      A[1..64]                                 Comment
+              CPNAME  A[1..64]
+                                Carrier ID for registering or alternating Carrier information
+       CARRIERID                Carrier location for registering or alternating
+       CARRIERLOC               information
+
+        SECS Communication format
+
+             S2F41 W
+             <L [2]
+
+                 <A 'INSTALL'> /* RCMD */
+                 <L [2]
+
+                     <L [2]
+                          <A 'CARRIERID'> /* CPNAME */
+                         <A CarrierID> /* CPVAL */
+
+                      >
+                     <L [2]
+
+                          <A 'CARRIERLOC'> /* CPNAME */
+                         <A CarrierLoc> /* CPVAL */
+                      >
+                 >
+             >.
+
+             S2F42
+             <L [2]
+
+                 <B 0x00> /* HCACK */
+                 <L [0]
+                 >
+             >.
+
+Selete                                                                     Feb./8/2002
+
+                                - 29 -
+                      Stocker Online Requirement Document (Version. 2.31)
+
+6.4 LOCATE             Format                CPVAL
+                      A[1..64]                      Comment
+              CPNAME
+       CARRIERID                Set Carrier ID that you would like to know
+                                it's current location.
+
+        SECS Communication format
+
+             S2F41 W
+             <L [2]
+
+                 <A 'LOCATE'> /* RCMD */
+                 <L [1]
+
+                      <L [2]
+                          <A 'CARRIERID'> /* CPNAME */
+                          <A CarrierID> /* CPVAL */
+
+                      >
+                  >
+             >.
+
+             S2F42
+             <L [3]
+
+                 <B 0x00> /* HCACK */
+                 <L [0]
+                  >
+             >.
+
+Selete                                                                      Feb./8/2002
+
+                                - 30 -
+                      Stocker Online Requirement Document (Version. 2.31)
+
+6.5 PAUSE             Format             CPVAL
+                                               Comment
+              CPNAME
+       None
+
+        SECS Communication format
+
+             S2F41 W
+             <L [2]
+
+                 <A 'PAUSE'> /* RCMD */
+                 <L [0]
+                  >
+             >.
+
+             S2F42
+             <L [2]
+
+                 <B 0x00> /* HCACK */
+                  <L [0]
+                  >
+             >.
+
+6.6 REMOVE             Format            CPVAL
+                      A[1..64]                 Comment
+              CPNAME
+       CARRIERID
+
+        SECS Communication format
+
+             S2F41 W
+             <L [2]
+
+                 <A 'REMOVE'> /* RCMD */
+                 <L [1]
+
+                      <L [2]
+                          <A 'CARRIERID'> /* CPNAME */
+                          <A 'Carrier1'> /* CPVAL */
+
+                      >
+                  >
+             >.
+
+             S2F42
+             <L [2]
+
+                 <B 0x00> /* HCACK */
+                 <L [0]
+                  >
+             >.
+
+Selete                                                                     Feb./8/2002
+
+                                         - 31 -
+                      Stocker Online Requirement Document (Version. 2.31)
+
+6.7 RESUME            Format              CPVAL
+                                                Comment
+              CPNAME
+       None
+
+        SECS Communication format
+
+             S2F41 W
+             <L [2]
+
+                 <A 'RESUME'> /* RCMD */
+                 <L [0]
+                  >
+             >.
+
+             S2F42
+             <L [2]
+
+                 <B 0x00> /* HCACK */
+                 <L [0]
+                  >
+             >.
+
+Selete                                                                     Feb./8/2002
+
+                                          - 32 -
+                         Stocker Online Requirement Document (Version. 2.31)
+
+6.8 TRANSFER               Format                CPVAL
+                         L[2]                           Comment
+                 CPNAME  A[1..64]
+                         U2        0=Not valid
+      COMMANDINFO                  1=Lowest 99=Highest
+          COMMANDID      L[3]
+          PRIORITY       A[1..64]  Transfer Source(can be omitted)
+                         A[1..64]  · input port
+      TRANSFERINFO                 · ZoneName
+          CARRIERID      A[1..64]  · Location of Storage
+          SOURCE                   Destination
+                                   · Loading port(LP)
+          DEST                     · ZoneName
+
+        SECS Communication format
+
+             S2F49 W
+             <L [4]
+
+                  <U4 0 > /* DATAID */
+                 <A ''> /* OBJSPEC */
+                 <A 'TRANSFER'> /* RCMD */
+                 <L [2]
+
+                      <L [2]
+                          <A 'COMMANDINFO'>
+                          <L [2]
+                              <L [2]
+                                   <A 'COMMANDID'>
+                                   <A CommandID>
+                               >
+                              <L [2]
+                                   <A 'PRIORITY'>
+                                   <U2 Priority>
+                               >
+                          >
+
+                      >
+                      <L [2]
+
+                          <A 'TRANSFERINFO'>
+                          <L [3]
+
+                              <L [2]
+                                   <A 'CARRIERID'>
+                                   <A CarrierID>
+
+                               >
+                              <L [2]
+
+                                   <A 'SOURCE'>
+                                   <A Source>
+                               >
+                              <L [2]
+                                   <A 'DEST'>
+
+Selete                                                                        Feb./8/2002
+
+                                                    - 33 -
+                             Stocker Online Requirement Document (Version. 2.31)
+
+                             <A Dest>
+                         >
+                     >
+                >
+            >
+        >.
+
+        S2F50
+        <L [2]
+
+            <B 0x00> /* HCACK */
+            <L [0]
+            >
+        >.
+
+Selete                                                                            Feb./8/2002
+
+        - 34 -
+                                       Stocker Online Requirement Document (Version. 2.31)
+
+7 Collection Events
+
+     The stocker supports the event report that is based on "Dynamic Event Report Configuration" described in GEM. This
+  chapter explains the event that is used by the stocker.
+
+7.1 CEID Assignment of Collection Events
+
+  The number system of CEID that is assigned to the event of stocker is shown in next table.
+                             Table 9 CEID Assignment of Collection Events
+
+                                Event Type             CEID
+
+             CEID assigned by Selete Spec.              1--600
+                  Event defined by GEM                  1--50
+                   Event defined by SEM                51--500
+                                                       501--600
+               Event defined by Selete Spec.            601--
+              CEID assigned by Supplier
+
+             Note: Even if it is the event defined by GEM or SEM, when CEID is not defined by Selete
+
+             specification but CEID is defined uniquely by the supplier, then he number after No.
+
+             601 is assigned.
+
+7.2 Collection Events for Stocker
+
+     This section explains the classification of event that is used by the stocker.
+
+        7.2.1 Control State Transition Events
+
+        CEI  Event Name                           Previous State                             New State     Report ID
+
+        D                                   ONLINE                                   Equipment OFFLINE                1
+                                            OFFLINE                                  ONLINE-LOCAL                     1
+        1 Equipment Off-line                ONLINE-REMOTE
+                                            OFFLINE                                  ONLINE-REMOTE                    1
+        2 Control State local               ONLINE-LOCAL
+
+        3 Control State Remote
+
+Selete                                                                                        Feb./8/2002
+
+                                               - 35 -
+                             Stocker Online Requirement Document (Version. 2.31)
+
+        7.2.2 SC State Transtion Events
+
+        CEI          Event Name                Previous State                           New State    Report ID
+
+        D                                                                                                       1
+
+        51 AlarmCleared                  ARARMS                NO ALARMS                                        1
+
+             This specification does not require implementation of AlarmCleared event.                          1
+
+        52 AlarmSet                      NO ARARMS             ALARMS                                           1
+                                                                                                                1
+             This specification does not require implementation of AlarmSet event.                              1
+                                                                                                                1
+        53 SCAutoCompleted               PAUSED                AUTO
+        54 SCAutoInitiated               PAUSING               SC INIT
+                                         None
+
+        55 SCPauseCompleted              PAUSING               PAUSED
+
+        56 SCPaused                      SC INIT               PAUSED
+
+        57 SCPauseInitiated              AUTO                  PAUSING
+
+        7.2.3 Transfer Command State Transition Events
+
+        CEI Event Name                         Previous State          New State                     Report ID
+          D
+                                         ABORTING              None                                             3
+        101 TransferAbortCompleted       ABORTING              ACTIVE                                           4
+        102 TransferAbortFailed          ACTIVE                ABORTING                                         4
+        103 TransferAbortInitiated       CANCELING             None                                             3
+        104 TransferCancelCompleted      CANCELING             QUEUED                                           4
+        105 TransferCancelFailed         QUEUED                CANCELING                                        4
+        106 TransferCancelInitiated      ACTIVE                None                                             2
+        107 TransferCompleted            QUEUED                TRANSFERING                                      4
+        108 TransferInitiated            TRANSFERING           PAUSED                                           2
+        109 TransferPaused               PAUSED                TRANSFERING                                      4
+        110 TransferResumed
+
+        7.2.4 Carrier State Transition Events
+
+        CEI EventName                          Previous State          New State                     Report ID
+          D
+                                         None                  COMPLETED                                        5
+        151 CarrierInstallCompleted      INSTALLED             None                                             5
+        152 CarrierRemoveCompleted       WAIT OUT              None                                             6
+        153 CarrierRemoved               ALTERNATE             TRANSFERRING                                     7
+        154 CarrierResumed               TRANSFERRING          COMPLETED                                        5
+        155 CarrierStored                TRANSFERRING          ALTERNATE                                        7
+        156 CarrierStoredAlt             WAIT IN               TRANSFERRING                                     8
+        157 CarrierTransferring          COMPLETED
+                                         None                  WAIT IN                                          5
+        158 CarrierWaitIn                TRANSFERRING          WAIT OUT                                         9
+        159 CarrierWaitOut               WAIT OUT
+                                                                                                               10
+        160 ZoneCapacityChange
+
+Selete                                                                                  Feb./8/2002
+
+                                               - 36 -
+                            Stocker Online Requirement Document (Version. 2.31)
+
+        7.2.5 Crane State Transition events
+
+        CEI Event Name                             Previous State          New State          Report ID
+          D
+                                             IDLE                  ACTIVE                               11
+        201 CraneActive                      ACTIVE                IDLE                                 11
+        202 CraneIdle
+
+        7.2.6 Other Events
+
+        CEI              Event Name                Previous State          New State          Report ID
+
+        D                                    None                  None                                 12
+                                             None                  None                                 13
+        251 CarrierIDRead                    None                  None                                 12
+
+        252 CarrierLocateCompleted
+
+        253 IDReaderError
+
+        7.2.7 Port State Transition events
+
+        CEID               Event Name              Previous State  New State                  Report ID
+
+        301 PortInService                   OutOfService           InService                  14
+
+                                            None
+
+              This event will be reported by SC when the state of the PortTransferService mentioned above
+
+              has changed to InService.
+
+        302 PortOutOfService                 InService             OutOfService               14
+
+                                             None
+
+              This event will be reported by SC when the state of the PortTransferService mentioned above
+              has changed to OutOfService.
+
+Selete                                                                           Feb./8/2002
+
+                                             - 37 -
+                   Stocker Online Requirement Document (Version. 2.31)
+
+7.3 Event Reports for Stocker
+
+     The next table shows, as an example of a dynamic event report , a report format that is used by an Integrator for
+  the stocker.
+
+        Report ID  Variable                            Report Format
+
+        1 EqpName            <L[1]
+
+                                <A EqpName>
+
+                             >
+
+        2 EqpName            <L[4]
+           TransferCommand
+           CarrierLoc           <A EqpName>
+           ResultCode
+                                <L [2]            /*TransferCommand>*/
+
+                                   <L[2]          /* CommandInfo */
+
+                                       <A CommandID>
+
+                                       <U2 Priority>
+
+                                    >
+
+                                   <L[3]          /* TransferInfo */
+
+                                       <A CarrierID>
+
+                                       <A CarrierLoc>
+
+                                       <A Dest>
+
+                                    >
+
+                                >
+
+                                <A CarrierLoc>
+
+                                <U2 ResultCode>
+
+                             >
+
+        3 EqpName            <L[3]
+           TransferCommand
+           CarrierLoc           <A EqpName>
+
+                                <L[2]             /*TransferCommand>*/
+
+                                   <L[2]          /* CommandInfo */
+
+                                       <A CommandID>
+
+                                       <U2 Priority>
+
+                                    >
+
+                                    <L[3]         /* TransferInfo */
+
+                                       <A CarrierID>
+
+                                       <A CarrierLoc>
+
+                                       <A Dest>
+
+                                    >
+
+                                >
+
+                                < A CarrierLoc >
+
+                             >
+
+        4 EqpName            <L[2]
+           TransferCommand
+                                <A EqpName>
+
+                                <L[2]             /*TransferCommand>*/
+
+                                   <L[2]          /* CommandInfo */
+
+                                       <A CommandID>
+
+                                       <U2 Priority>
+
+                                    >
+
+                                   <L[3]          /* TransferInfo */
+
+                                       <A CarrierID>
+
+                                       <A CarrierLoc>
+
+                                       <A Dest>
+
+                                    >
+
+                                >
+
+                             >
+
+Selete                                                                  Feb./8/2002
+
+                                        - 38 -
+                        Stocker Online Requirement Document (Version. 2.31)
+
+        Report ID  Variable                              Report Format
+
+        5 EqpName            <L[3]
+           CarrierID             <A EqpName>
+           CarrierLoc            <A CarrierID>
+                                 <A CarrierLoc>
+        6 EqpName
+           CarrierID         >
+           HandoffType       <L[3]
+
+        7 EqpName                <A EqpName>
+           CarrierID             <A CarrierID>
+           CarrierLoc            <U2 HandoffType>
+           Dest              >
+                             <L[4]
+        8 EqpName                <A EqpName>
+           CarrierID             <A CarrierID>
+                                 <A CarrierLoc>
+        9 EqpName                <A DEST>
+           CarrierID         >
+           CarrierLoc        <L[2]
+           PortType              <A EqpName>
+                                 <A CarrierID>
+        10 EqpName           >
+             ZoneData        <L[4]
+             CarrierID           <A EqpName>
+                                 <A CarrierID>
+        11 EqpName               <A CarrierLoc>
+             CommandID           <A PortType>
+                             >
+        12 EqpName           <L[3]
+             CarrierID           <A EqpName>
+             CarrierLoc          <L[2]
+             IDReadStatus
+                                     <A ZoneName>
+        13 EqpName                   <U2 ZoneCapacity>
+             CarrierID           >
+             CarrierLoc          <A CarrierID>
+                             >
+        14 EqpName           <L[2]
+             PortID              <A EqpName>
+                                 <A CommandID>
+                             >
+                             <L[4]
+                                 <A EqpName>
+                                 <A CarrierID>
+                                 <A CarrierLoc>
+                                 <U2 IDReadStatus>
+                             >
+                             <L[3]
+                                 <A EqpName>
+                                 <A CarrierID>
+                                 <A CarrierLoc>
+                             >
+                             <L[2]
+                               <A EqpName>
+                               <A PortID>
+                             >
+
+Selete                                                                       Feb./8/2002
+
+                             - 39 -
+                 Stocker Online Requirement Document (Version. 2.31)
+
+7.4 Supplements
+
+        7.4.1 CarrierWaitIn Event
+
+        1. As CarrierID to be reported in CarrierWaitIn event, SC should report the following ID: either the ID that
+              was acquired by IDReader, or the temporary ID that was generated by SC when abnormalities were
+              detected by CarrierIDRead. (CarrierID should not be blank.)
+
+        2. Before CarrierWaitIn event , SC should generate CarrierIDRead event . (The operation of stocker after
+              CarrierWaitIn will be as follows. If a carrier ID read is successful, it will follow a host's Transfer command.
+              If a carrier ID read fails, it will not wait for a host's Transfer command, but will turn into the original
+              operation [for example, an abnormal outgoing process operation] of stocker. For this reason, a host sees
+              CarrierIDRead result and judges whether or not Transfer command is issued.
+
+     7.4.2 ZoneCapacityChange Event
+
+1. A host does not positively use the Zone function of Stocker SEM. For this reason, a user should establish only
+      one Zone by a stocker, and let the region be the entire rack. Moreover, Zone should not be set to a port.
+
+Selete                                                                Feb./8/2002
+
+                 - 40 -
+                                                  Stocker Online Requirement Document (Version. 2.31)
+
+8 Carrier Location Information
+
+     8.1 Carrier Location Information in SECS Messages
+
+           8.1.1 Notation of Carrier Location in SECS Messages
+
+        In case the location information that is used by the message is explained, the name of the location information shown below is used.
+
+The location information showing a unit
+
+        Equipment Type                   The name of location
+                                             information
+
+        Stocker             Stocker ID
+
+The location information showing the unique location (port) in equipment
+
+            Equipment Type                     Port Type                  The name of location
+        Stocker
+                                                                          information
+
+                            Input shuttle                                 Input port
+
+                            Port, where Crane place a carrier             Output port
+
+                            Area, where people or transfer Loading port
+                            equipment pick up carrier
+
+                            Buffer port for carrier out-puts.             Buffer port
+
+                            Each port of a shelf                          Location in a Storage
+
+The location information showing a port group  Port Type                      The name of location
+              Equipment Type                                                       information
+
+        Stocker             Plural (all) ports of a shelf                 ZoneName
+
+Selete                                                                                                                                        Feb./8/2002
+
+                                                                          - 41 -
+                                         Stocker Online Requirement Document (Version. 2.31)
+
+8.1.2 Carrier Location in SECS Message
+
+   The location data and the carrier location information that are used by the stocker are shown in next table.
+
+               Name of command or event     Data name of                    Location data of a message
+                                               location
+               TRANSFER Command                           Storage           Input Port                           Output Port
+                                         SOURCE
+               CarrierIDRead             DEST             Blank (omitted)   Blank (omitted)
+               CarrierInstallCompleted   CarrierLoc
+               CarrierLocateCompleted    CarrierLoc       ZoneName                                               loading port
+               CarrierRemoveCompleted    CarrierLoc
+               CarrierResumed            CarrierLoc                         input port
+                                         CarrierLoc
+               CarrierStored             DEST             Shelf Location
+                                         CarrierLoc
+               CarrierStoredAlt                           The location information at present
+
+               CarrierWaitIn                              The location information at present
+               CarrierWaitOut
+                                                          Shelf Location
+               IDReadError
+               TransaferAbortCompleted                    The same data as TRANSFER command
+
+               TransferAbortFailed                        Shelf Location
+               TransferAbortInitiated
+               TransferCancelCompleted   CarrierLoc       Shelf Location
+                                         DEST             The same data as TRANSFER command
+Selete                                   CarrierLoc
+                                         CarrierLoc                                input port
+
+                                         CarrierLoc                                                              output port
+                                         TransferInfo                                                            buffer port
+                                         CarrierLoc                                                              loading port
+                                         TransferInfo
+                                         TransferInfo     The location information at present
+                                         TransferInfo
+                                         CarrierLoc       The same data as TRANSFER command
+
+                                                          The location information at present
+
+                                                          The same data as TRANSFER command
+
+                                                          The same data as TRANSFER command
+
+                                                          The same data as TRANSFER command
+
+                                                          Shelf Location    input port
+
+                                                                                                                               Feb./8/2002
+
+                                                                    - 42 -
+                                 Stocker Online Requirement Document (Version. 2.31)
+
+        TransferCancelFailed     TransferInfo  The same data as TRANSFER command    output port
+        TransferCancelInitiated  TransferInfo  The same data as TRANSFER command    buffer port
+        TransferCompleted        TransferInfo  The same data as TRANSFER command    loading port
+                                 CarrierLoc    Shelf Location
+        TransferInitiated
+        TransferPaused           TransferInfo  The same data as TRANSFER command
+                                 TransferInfo  The same data as TRANSFER command
+        TransferResumed          CarrierLoc    The location information at present
+        ZoneCapacityChanged      TransferInfo  The same data as TRANSFER command
+                                 ZoneName      ZoneName
+
+Selete                                                                                            Feb./8/2002
+
+                                               - 43 -
+                                       Stocker Online Requirement Document (Version. 2.31)
+
+9 Interpretation of SEMI Standards
+
+        This chapter explains the matters that clarify interpretation out of SEMI standard.
+
+     9.1 Control State Model for Stocker
+
+           The function about the on-line/off-line of a general equipment system is specified in GEM as a control state
+        model. Moreover, the state model of stocker is specified in Stocker SEM as a SC State model. These two state
+        models are used as follows.
+
+        The state model of stocker is shown in the following figure.
+
+        C  Off-line
+
+                                               C
+
+                    Equipment                  In the Process of
+                     Off-line                       On-line
+
+                                            C
+
+                    Host Off-line
+
+           On-line   Local                                 Remote
+              C
+                                                  SYSTEM
+           SCINIT                                                  AVAILABILITY
+                                                 AUTO
+           PAUSED                                                      ALARM
+                                               PAUSING
+                                                                    NO ALARM
+
+                     Figure 5 Control State Model of Stocker
+
+Selete                                                                           Feb./8/2002
+
+                                                  - 44 -
+           Stocker Online Requirement Document (Version. 2.31)
+
+9.2 VID, SVID and ECID
+
+        Variable data (V) show 3 kinds of data as follows.
+
+        V  SV(state variable data)
+
+           ECV(equipment constant)
+
+           DVVAL(data value)
+
+        The relation of VID, SVID, and ECID is as follows.
+              Ø Among VIDs, VID that points out SV is called SVID.
+              Ø Among VIDs, VID that points out ECV is called ECID.
+
+Selete                                                               Feb./8/2002
+
+                                    - 45 -
+                                       Stocker Online Requirement Document (Version. 2.31)
+
+10 Distinction from SEMI Standards.
+
+        This section represents the distinction of this Document from StockerSEM.
+
+           1. Terminology is added. (Refer to 2. Terminology)
+           2. Both active and passive modes are required for HSMS Connect Mode. (Refer to 3.1.1. HSMS Connect Mode)
+           3. Formats of Ux of Data Items are altered to U4. (Refer to 4.1.SECS Data Items)
+           4. VIDs are specified. (Refer to 4.2.Variable Table)
+           5. CEIDs are specified. (Refer to 7.2 .Collection Events for Stocker)
+           6. Formats of EventReports are specified by Selete Specification. (Refer to 7.2.Collection Event for Stocker,
+
+                6.3.Event Report for Stocker) However, it does not deny the function of "Dynamic Event Report
+                Configuration" described in GEM. Furthermore, if GEM has its function, automatically it is satisfied with this
+                specification. It explains how Host uses event reports.
+           7.Additional specification to CarrierWaitIn Event. (Refer to 7.4.1. CarrierWaitIn Event)
+           8.Use of Zone function is notpositively recommended. (Refer to 7.4.2.ZoneCapacityChange event)
+           9.Carrier Location Information is added. (Refer to 8.CarrierLocationInformation)
+           10.Interpretations of SEMI Standard are clarified. (Refer to 9.Interpretation of SEMI Standards)
+
+11 Scenario
+
+   For the communication scenario of stocker, refer to the following chapters of AMHS communication scenario
+   specification.
+
+       Chapter 2 Common scenario
+        Chapter 3 Stocker scenario
+
+Selete          Feb./8/2002
+
+        - 46 -
+                            Stocker Online Requirement Document (Version. 2.31)
+
+12 Revision History
+
+        Version    Date                                   Updating part
+          0.5    99/12/08   New
+          1.0    99/12/27
+                            The following chapters are added.
+        1.1      2000/2/25    2.3. Subsidiary Condition
+                              7. Interpretation of SEMI standard
+
+                            The followings are updated.
+                              3.2.2. Variable that is used by stocker: Control State,
+                                   EmptyCarrier, and HandoffType,
+                              6.2.3. Trans port Command StateTransition Event:
+                                   TransferAbortCompleted (Revision),
+                                   TransferCancelComplEted (Revision), and
+                                   TransferCancelFaileD (Addition)
+                              6.2.7. Event of Selete Original Specification Definition
+                              8.1.13. PAUSE and RESUME 8.1.14 Re-connection from
+                                   Communication Failure
+                              8.2.5. Shelf =>Outgoing process multiport BP transfer
+                                   completed ID Reader is present.
+
+                            The following chapter is deleted.
+                              2.3 subsidiary conditions
+
+                            The following chapters are added.
+                              2. Terminology
+                              74 Supplement
+                              8 Location Information
+
+                            The followings are updated.
+                              3.2.1 Description about State about Alarm is deleted.
+                              3.2.2 Description about State about Alarm is deleted.
+                              3.2.2 Figure of "Entity That Owns State Model" is altered.
+                              3.2.2 Explanation of "Service State" and "Port State" is added.
+                              4.1 Explanation of "DATAID"," HCACK", and "OBJESPEC"
+                                   of SECS Data Item is altered.
+                              4.1 DATALENGTH, GRANT, and GRANT6 of SECS Data
+                                   Item are deleted.
+                              4.2.2 Explanation of Priority in Table is altered.
+                              4.2.2 Explanation of IDReadState in Table is deleted.
+                              4.2.2 Table of Selete Specification Original Definition is
+                                   altered.
+                              4.2.3 Explanation of Selete Specification Original Definition
+                                   Variable is altered.
+                              5.1 S2F39/F40 and S6F5/F6 are deleted from Message List.
+                              5.1 Data Examples of S2F42 and S2F50 are altered.
+                              6.1, 6.2, 6.3, 6.4, 6.6 S2F42 format example s are altered.
+                              6.4 ZoneName and CarrierLoc of Locate Command variables
+                                   are deleted.
+                              6.8 S2F50 format example is altered.
+                              7.2 Report ID of Event is revised.
+                              7.2.7 Classification of Event is deleted/added.
+                              7.3 Report of Event is added/altered.
+                              8.1.2 Table of Location Information for Every Message is
+                                   altered.
+
+Selete                                                                           Feb./8/2002
+
+                            - 47 -
+                            Stocker Online Requirement Document (Version. 2.31)
+
+           1.2  2000/5/23     9.1 Figure of Event Report of Outgoing Process is added.
+                              10 Contents of Scenario is shifted to AMHS Communication
+           1.3  2000/10/23
+           2.0  2000/10/31         Scenario Specification.
+
+Selete                      The followings are updated.
+                              4.1 Explanation of Format of "Item Description in Table" is
+                                   altered.
+                              4.2.2 Table. class name of (VID=71) is revised.
+                              4.2.2 Table of "Variable That Is Used by Stocker and That Is
+
+                            Uniquely defined by Selete Specification " has two variables
+                            added.
+
+                              4.2.3 Figure of "Stocker and Transfer Port Model".
+                            Variables of PortID and PortState have a suffix (i) added.
+
+                              4.2.3.2 Title and Explanation. are altered.
+                              5.1 Transmission Directions of S9F1, S9F3, S9F5, S9F7,
+
+                                   S9F9, and S9F11 are revised..
+                              7.1 Note of Figure "Event CEID System" is revised.
+                              7.2.1 New State of (CEID=3) of Table is revised.
+                              7.2.2 Event Name of (CEID=53, 54, 55, 56, 57).of Table is
+
+                                   revised.
+                              7.2.4 Event Name and New State of (CEID=151) of Table are
+                            revised.
+                              7.2.4 Old State of (CEID=157) of Table is revised.
+                              7.2.6 Event Name of (CEID=252) of Table is revised.
+                              7.3 Report Format of (Report ID=9, 13) of Table is revised.
+                              8.1.2 Table is sorted by Event Name.
+                              8.1.2 CarrierLocateCompleted Event is added.
+
+                            The followings are updated.
+                            3.2.2 SCState and ControlState in the Figure6 are altered to be
+
+                                    indipendent.
+                            4.1 ECNAME is added into the SECS data items.
+                            4.2.2 The explanation between 64 and 67 for the VID6 in figure5
+
+                                    are deleted.
+                                VID79 SCStaet is added into Figure6.
+                            9.2 The sentence of "SCSate model replaces the "On-line
+
+                                    remote" of the control state model of GEM " is deleted.
+                                 Figure6 are altered.
+                            The following chapters are added.
+                            3.1.1 "HSMS Connect Mode"
+                            4.2.3.2 "AllPortState and PortIDList"
+                            10 "The Distinction from SEMI Standards"
+
+                                     ("Scenario" is shifted to Chapter11 and "Revision
+                                     History" is sifted to Chapter12.)
+                            The followings are updated.
+                            4.1 "(However, when a host sends Ux item, it sends them as
+                                   U2 format.)" is deleted.
+                            4.1 The format of ALID, CEID, DATAID, ECID, RPTID,
+                                   SVID, VID is altered to U4.
+                            4.2.2 The following contents of Table7 are altered.
+                                     201 StockerAvail is deleted and to be missing number.
+                            5.1 S6F15/16,S6F19/20 in table9 are deleted from Message List.
+
+                                                                                 Feb./8/2002
+
+                            - 48 -
+                           Stocker Online Requirement Document (Version. 2.31)
+
+                           5.1 The formats related from 4.1 are altered.
+
+                           7.2.7 The following contents of the table are altered.
+
+                           501 StockerAvailChanged and 502PortStateChange are
+
+                           deleted and to be missing number.
+
+                           503 PortsAvailable, 504 PortsUnavailable are added.
+
+           2.1  2001/1/9   The followings are updated.
+           2.2  2001/2/22
+           2.3  2001/8/31  1.2 "In addition, this requirement document..." and the
+
+Selete                     proceeding parts are deleted.
+
+                           1.3 "Selete AMHS Integration System Emulator Requirment
+
+                           Document" in the Reference
+
+                           Documents is deleted. "Selete AMHS Communications
+
+                           Scenario Document" is added.
+
+                           4.2.2 Table 7 of "201 StockAvail" is added and "205
+
+                           PortIDList" is deleted,
+
+                           "PortState" is altered to "StockerPortAvail," and
+
+                           "AllPortState" is altered to "AllStockerPortAvail."
+
+                           4.2.3 is entirely arranged.
+
+                           5.1 "emulator" is altered to "integrator."
+
+                           7.2.7 "501 StockerPortAvailChanged" and "502
+
+                           StockerAvailChanged" are added, and
+
+                           "503 PortsAvailable" and "504 Ports Unavailable" are
+
+                           deleted.
+
+                           7.3 Repport ID 14 and 15 are updated
+
+                           The followings are updated.
+
+                           Use word "integrator" instead of "emulator" in whole the
+
+                           document.
+
+                           1.3. Reference Document        Add "Selete               Integrator
+
+                           Requirement Document" and "Selete AMHS Communication
+
+                           Test Specification"
+
+                           Table 7 "PortID" is altered to "StockerPortID".
+
+                           4.2.3.2 StockerPortAvail and AllStockerPortAvail "PortID" is
+
+                           altered to "StockerPortID".
+
+                           6.4 LOCATE `All carrier information will be returned, when
+
+                           A[0] is set.' is removed from `comment'.
+
+                           7.3. "PortID" is altered to "StockerPortID" of Report ID 14
+
+                           3.2 "Variable Data Collection" in Figure2 GEM Capabilities
+                                 is altered to space.
+
+                           3.2.2 "Entity that have State Model" is altered.
+                                  Description of "Service State" and "Port State " are
+                                    deleted.
+
+                           4.2.2 Table6 VID80 and 81 are added in Variable used by
+                                       Stocker, which are defined by StockerSEM.
+
+                           4.2.2 Table7 "Variable used by Stocker, which are defined by
+                                    Selete Specification" is deleted.
+
+                           4.2.3 "Variable defined by Selete Specifications for Stocker"
+                                    is altered to Explanation of "PortTransferState and
+                                    CurrentPortStates"
+
+                           7.2.2 Comment is added to CEID 51 and 52.
+                           7.2.7 "Event defined by Selete" is deleted.
+
+                                                                                        Feb./8/2002
+
+                                      - 49 -
+              Stocker Online Requirement Document (Version. 2.31)
+
+              7.2.7 "Port State Transaction events" is added.
+
+              7.3 Report14 is altered.
+
+              7.3 Report15 is deleted.
+
+              9.1 "Carrier Transfer to a Stocker Output Port" is deleted.
+
+              10 "Addiitional variables are defined by ... " is deleted.
+
+              10 " Additional EventReports are defined by ... "is deleted
+
+        2.31  2002/2/8 5.1. Table 8, Change Examples of S1F3/4
+
+Selete                                                                     Feb./8/2002
+
+              - 50 -
+
