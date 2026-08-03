@@ -16,6 +16,13 @@ public static class Program
             Environment.Exit(2);
         }
         var cfg = BufferCConfig.Load(cfgPath);
+        var errors = BufferCConfig.Validate(cfg);
+        if (errors.Count > 0)
+        {
+            Console.Error.WriteLine("配置错误（启动中止）：");
+            foreach (var e in errors) Console.Error.WriteLine($"  - {e}");
+            Environment.Exit(2);
+        }
         using var service = new BufferCService(cfg);
         service.Start();
 

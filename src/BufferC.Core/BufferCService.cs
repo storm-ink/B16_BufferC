@@ -93,20 +93,32 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
     {
         _cts.Cancel();
         _hsms?.Dispose();
+        lock (_logLock)
+        {
+            _logWriter?.Dispose();
+            _logWriter = null;
+        }
     }
 
     public void Dispose() => Stop();
 
     // ---------- IEventSink ----------
+    private readonly object _logLock = new();
+    private StreamWriter? _logWriter;
+
     public void Log(string category, string msg)
     {
         var line = $"[{DateTime.Now:HH:mm:ss.fff}][{category}] {msg}";
         Console.WriteLine(line);
         try
         {
-            // UTF-8 带 BOM：Windows PowerShell 5.1 Get-Content 自动识别，避免中文乱码
-            using var sw = new StreamWriter(_cfg.LogFile, append: true, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
-            sw.WriteLine(line);
+            // 单例 writer（高频事件下避免反复开关文件句柄）；UTF-8 带 BOM 兼容 PowerShell 5.1
+            lock (_logLock)
+            {
+                _logWriter ??= new StreamWriter(_cfg.LogFile, append: true,
+                    new UTF8Encoding(encoderShouldEmitUTF8Identifier: true)) { AutoFlush = true };
+                _logWriter.WriteLine(line);
+            }
         }
         catch { /* 日志文件不可写时仅控制台 */ }
     }

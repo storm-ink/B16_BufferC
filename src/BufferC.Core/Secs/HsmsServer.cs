@@ -36,6 +36,12 @@ public sealed class HsmsServer : IDisposable
     public event Action<string, string>? Log;   // (方向, 消息)
     public event Action<string, Dictionary<string, string>>? OnHostCommand; // S2F41 (RCMD, 参数) → 业务层
 
+    /// <summary>协议帧级日志（logFrames=false 时跳过，避免运行期刷屏）</summary>
+    private void LogFrame(string category, string msg)
+    {
+        if (_cfg.LogFrames) Log?.Invoke(category, msg);
+    }
+
     public HsmsServer(HsmsConfig cfg, IStatusProvider provider)
     {
         _cfg = cfg;
@@ -118,7 +124,7 @@ public sealed class HsmsServer : IDisposable
             {
                 var msg = await ReadMessageAsync(_stream, ct);
                 if (msg == null) break;
-                Log?.Invoke("←MCS", $"{msg.Name} sys={msg.SystemBytes} HEX={Convert.ToHexString(msg.ToBytes())}\n{msg.Sml()}");
+                LogFrame("←MCS", $"{msg.Name} sys={msg.SystemBytes} HEX={Convert.ToHexString(msg.ToBytes())}\n{msg.Sml()}");
                 Dispatch(msg);
             }
         }
@@ -161,7 +167,7 @@ public sealed class HsmsServer : IDisposable
     {
         if (m.Stream == 0 && m.Function == 1) { SendRaw(0, 2, false, Array.Empty<byte>(), m.SystemBytes); return; }
         if (!m.WBit && _outstanding.Remove(m.SystemBytes))
-            Log?.Invoke("MCS→", $"回复 {m.Name} sys={m.SystemBytes}（T3 匹配清除）");
+            LogFrame("MCS→", $"回复 {m.Name} sys={m.SystemBytes}（T3 匹配清除）");
         switch (m.Stream)
         {
             case 1:
@@ -189,15 +195,15 @@ public sealed class HsmsServer : IDisposable
                 }
             case 5:
                 if (m.Function == 5) { HandleS5F5(m); return; }
-                if (m.Function == 2) { Log?.Invoke("MCS→", $"S5F2 ACKC5={m.Items().FirstOrDefault()?.AsByte()}"); return; }
+                if (m.Function == 2) { LogFrame("MCS→", $"S5F2 ACKC5={m.Items().FirstOrDefault()?.AsByte()}"); return; }
                 SendS9F5(m); return;
             case 6:
-                if (m.Function == 12) { Log?.Invoke("MCS→", "S6F12 ACK"); return; }
+                if (m.Function == 12) { LogFrame("MCS→", "S6F12 ACK"); return; }
                 SendS9F5(m); return;
             case 9:
-                Log?.Invoke("MCS→", $"S9 错误报告:\n{m.Sml()}"); return;
+                LogFrame("MCS→", $"S9 错误报告:\n{m.Sml()}"); return;
             case 10:
-                if (m.Function == 2) { Log?.Invoke("MCS→", "S10F2 ACK"); return; }
+                if (m.Function == 2) { LogFrame("MCS→", "S10F2 ACK"); return; }
                 SendS9F5(m); return;
             default:
                 SendS9F3(m); return;
@@ -229,9 +235,12 @@ public sealed class HsmsServer : IDisposable
     {
         14 => SecsEncode.U2(5),                                   // ControlState: ONLINE REMOTE
         21 => SecsEncode.U2(3),                                   // SCState: AUTO
-        15 => SecsEncode.L(_provider.Carriers.Select(c =>
-                  SecsEncode.L(SecsEncode.A(c.CarrierId), SecsEncode.A(c.CarrierLoc),
-                               SecsEncode.A(c.InstallTime), SecsEncode.U2(c.State))).ToArray()),
+        15 => _cfg.SvidCarrierFormat == "l2"
+                 ? SecsEncode.L(_provider.Carriers.Select(c =>
+                       SecsEncode.L(SecsEncode.A(c.CarrierId), SecsEncode.A(c.CarrierLoc))).ToArray())
+                 : SecsEncode.L(_provider.Carriers.Select(c =>
+                       SecsEncode.L(SecsEncode.A(c.CarrierId), SecsEncode.A(c.CarrierLoc),
+                                    SecsEncode.A(c.InstallTime), SecsEncode.U2(c.State))).ToArray()),
         29 => SecsEncode.L(_provider.Units.Select(u =>
                   SecsEncode.L(SecsEncode.A(u.UnitId), SecsEncode.U2(u.State))).ToArray()),
         3 => SecsEncode.L(_provider.Alarms.Select(a =>
@@ -269,7 +278,7 @@ public sealed class HsmsServer : IDisposable
             }
         }
         catch (Exception e) { Log?.Invoke("HSMS", $"S2F41 解析失败: {e.Message}"); return; }
-        Log?.Invoke("←MCS", $"S2F41 RCMD={rcmd} 参数={string.Join(", ", pars.Select(p => $"{p.Key}={p.Value}"))}");
+        LogFrame("←MCS", $"S2F41 RCMD={rcmd} 参数={string.Join(", ", pars.Select(p => $"{p.Key}={p.Value}"))}");
         OnHostCommand?.Invoke(rcmd, pars);
         // 业务层通过事件回调异步处理；先按规范回 HCACK=4（确认将执行）
         byte hcack = rcmd switch
@@ -309,7 +318,7 @@ public sealed class HsmsServer : IDisposable
             try
             {
                 _stream.Write(msg.ToBytes());
-                Log?.Invoke("→MCS", $"{msg.Name} sys={sysBytes}\n{string.Join("\n", msg.Items().Select(x => x.ToSml(1)))}");
+                LogFrame("→MCS", $"{msg.Name} sys={sysBytes}\n{string.Join("\n", msg.Items().Select(x => x.ToSml(1)))}");
                 return true;
             }
             catch (Exception e)
