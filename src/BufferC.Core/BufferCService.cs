@@ -28,6 +28,9 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
         _inv = new Inventory(cfg.DbPath);
     }
 
+    /// <summary>全部 PLC 已完成首次轮询（基线就绪，测试/联调用）</summary>
+    public bool AllPlcsReady => _pollers.Count > 0 && _pollers.All(p => p.Snapshot != null);
+
     // ---------- IStatusProvider ----------
     // SVID 15/29：台账 + 轮询快照合并（重启恢复后台账为空，查询须反映 PLC 实况）
     public IReadOnlyList<CarrierStatus> Carriers

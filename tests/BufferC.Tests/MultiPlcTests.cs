@@ -32,7 +32,11 @@ public sealed class MultiPlcTests : IAsyncLifetime
         _mcs = new McsSim();
         _mcs.Connect("127.0.0.1", 5010);
         await _mcs.EstablishAsync();
-        await Task.Delay(500);   // 等 15 台全部基线
+        // 等 15 台全部完成基线轮询（CI 机器较慢，固定 delay 不可靠）
+        var deadline = Environment.TickCount64 + 15000;
+        while (!_svc.AllPlcsReady && Environment.TickCount64 < deadline)
+            await Task.Delay(100);
+        Assert.True(_svc.AllPlcsReady, "15 台 PLC 未在 15s 内完成基线轮询");
     }
 
     public Task DisposeAsync()
