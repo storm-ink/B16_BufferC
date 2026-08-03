@@ -14,7 +14,8 @@ public class ModbusStackTests
         int port = plc.Start();
         try
         {
-            using var client = new ModbusTcpClient("127.0.0.1", port, 1, timeoutMs: 3000);
+            // 超时放宽：CI 高负载下 3s 可能撞上调度延迟（本测试验证栈正确性，非速度）
+            using var client = new ModbusTcpClient("127.0.0.1", port, 1, timeoutMs: 10000);
             client.Connect();
             for (int i = 0; i < 20; i++)
             {
@@ -42,7 +43,7 @@ public class ModbusStackTests
         int port = plc.Start();
         try
         {
-            using var client = new ModbusTcpClient("127.0.0.1", port, 1, timeoutMs: 3000);
+            using var client = new ModbusTcpClient("127.0.0.1", port, 1, timeoutMs: 10000);
             client.Connect();
             var ids = RegisterMap.PackAscii("CARRIER001", "high");
             client.WriteMultipleRegisters(417 + 2 * 16, ids);   // 站口 3 的 ID
