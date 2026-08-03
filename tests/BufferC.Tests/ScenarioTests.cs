@@ -36,7 +36,9 @@ public sealed class ScenarioTests : IAsyncLifetime
         _mcs = new McsSim();
         _mcs.Connect("127.0.0.1", 5000);
         await _mcs.EstablishAsync();
-        await Task.Delay(300);   // 等 BufferC 完成基线轮询
+        // 等基线轮询就绪（CI 负载下固定 delay 不可靠）
+        var deadline = Environment.TickCount64 + 15000;
+        while (!_svc.AllPlcsReady && Environment.TickCount64 < deadline) await Task.Delay(100);
     }
 
     public Task DisposeAsync()
@@ -360,7 +362,8 @@ public sealed class ScenarioTests : IAsyncLifetime
             var mcs1 = new McsSim();
             mcs1.Connect("127.0.0.1", 5002);
             await mcs1.EstablishAsync();
-            await Task.Delay(300);
+            var ready = Environment.TickCount64 + 15000;
+            while (!svc1.AllPlcsReady && Environment.TickCount64 < ready) await Task.Delay(100);
 
             _plc.SetCarrierId(6, "CARRIER006");                          // 正常 204 事件 → 台账入库
             _plc.SetStationState(6, 2);
@@ -412,7 +415,8 @@ public sealed class ScenarioTests : IAsyncLifetime
         try
         {
             using var http = new HttpClient { BaseAddress = new Uri("http://127.0.0.1:5003") };
-            await Task.Delay(300);
+            var ready = Environment.TickCount64 + 15000;
+            while (!svc.AllPlcsReady && Environment.TickCount64 < ready) await Task.Delay(100);
 
             // 状态视图包含 PLC 与 16 站口
             var status = await http.GetStringAsync("/api/status");
@@ -459,7 +463,8 @@ public sealed class ScenarioTests : IAsyncLifetime
         try
         {
             using var http = new HttpClient { BaseAddress = new Uri("http://127.0.0.1:5005") };
-            await Task.Delay(300);
+            var ready = Environment.TickCount64 + 15000;
+            while (!svc.AllPlcsReady && Environment.TickCount64 < ready) await Task.Delay(100);
             var mcs = new McsSim();
             mcs.Connect("127.0.0.1", 5006);
             await mcs.EstablishAsync();
@@ -507,7 +512,8 @@ public sealed class ScenarioTests : IAsyncLifetime
         try
         {
             using var http = new HttpClient { BaseAddress = new Uri("http://127.0.0.1:5007") };
-            await Task.Delay(300);
+            var ready = Environment.TickCount64 + 15000;
+            while (!svc.AllPlcsReady && Environment.TickCount64 < ready) await Task.Delay(100);
             var mcs = new McsSim();
             mcs.Connect("127.0.0.1", 5008);
             await mcs.EstablishAsync();

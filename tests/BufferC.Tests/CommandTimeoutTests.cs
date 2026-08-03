@@ -33,7 +33,8 @@ public sealed class CommandTimeoutTests : IAsyncLifetime
         _mcs = new McsSim();
         _mcs.Connect("127.0.0.1", 5001);
         await _mcs.EstablishAsync();
-        await Task.Delay(300);
+        var ready = Environment.TickCount64 + 15000;
+        while (!_svc.AllPlcsReady && Environment.TickCount64 < ready) await Task.Delay(100);
     }
 
     public Task DisposeAsync()
