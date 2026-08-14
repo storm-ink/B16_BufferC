@@ -29,6 +29,17 @@ public sealed class McsSim : IDisposable
         _ = Task.Run(() => ReceiveLoopAsync(_cts.Token));
     }
 
+    /// <summary>断连注入（联调调试台）：掐断连接并清空收/发状态；之后可重新 Connect + EstablishAsync</summary>
+    public void DropConnection()
+    {
+        Console.WriteLine("[McsSim] 注入: 断连");
+        _cts.Cancel();
+        _tcp?.Dispose();
+        _stream = null;
+        _pending.Clear();
+        _received.Clear();
+    }
+
     /// <summary>建连：S1F13 → S1F14、S1F1 → S1F2、S1F17 → S1F18（Ameth 初始化流程）</summary>
     public async Task EstablishAsync()
     {

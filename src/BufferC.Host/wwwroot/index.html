@@ -23,7 +23,6 @@
   .offline-mark { position: absolute; top: 1px; right: 3px; font-size: 9px; background: #0008; border-radius: 3px; padding: 0 3px; }
   .trunc { background: #ffeb3b; color: #000; border-radius: 3px; padding: 0 3px; font-size: 9px; }
   .stat-line { font-size: 11px; color: #555; margin: 4px 0; }
-  details { margin-top: 4px; } summary { cursor: pointer; font-size: 12px; color: #1565c0; }
   .reg-table { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 4px; }
   .reg-table th, .reg-table td { border: 1px solid #ddd; padding: 2px 5px; text-align: left; }
   .reg-table th { background: #f5f5f5; }
@@ -40,63 +39,155 @@
           max-height: 260px; overflow-y: auto; padding: 6px 8px; border-radius: 4px; margin-top: 6px; }
   .logs .t { color: #808080; } .logs .c { color: #569cd6; }
   .logs .l-cmd { color: #c586c0; } .logs .l-err { color: #f44747; } .logs .l-ok { color: #4ec9b0; }
-  .logs .l-frame { color: #9e9e9e; }
+  .logs .l-frame { color: #9e9e9e; } .logs .l-debug { color: #8a9bb5; } .logs .l-trace { color: #5c6b7a; }
   .log-filter button { margin-right: 4px; padding: 2px 10px; font-size: 12px; }
   .overlay { position: fixed; inset: 0; background: #0008; display: none; align-items: center; justify-content: center; z-index: 99; }
   .overlay .box { background: #fff; border-radius: 8px; padding: 18px 24px; max-width: 480px; }
   .overlay .box p { margin: 8px 0; }
   .overlay .box button { padding: 6px 18px; margin: 0 6px; }
   .paused { outline: 2px solid var(--warn); }
+  /* 5 页导航 + 分栏寄存器视图 */
+  .nav { display: flex; gap: 4px; margin: 6px 0; flex-wrap: wrap; }
+  .nav button { padding: 6px 18px; border: 1px solid #bbb; background: #eee; border-radius: 5px; cursor: pointer; font-size: 13px; }
+  .nav button.active { background: var(--blue); color: #fff; border-color: var(--blue); font-weight: bold; }
+  .page { display: none; } .page.active { display: block; }
+  .reg-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 8px; }
+  .reg-col { border: 1px solid #eee; border-radius: 4px; padding: 6px; background: #fafafa; }
+  .reg-col h3 { font-size: 12px; margin: 0 0 4px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .reg-col h3 button { font-size: 11px; padding: 1px 10px; }
+  .reg-raw { font-size: 11px; color: #555; margin-top: 4px; max-height: 240px; overflow-y: auto; }
+  .mono { font-family: Consolas, monospace; font-size: 10px; color: #555; word-break: break-all; }
 </style>
 </head>
 <body>
 <h1>BufferC 缓冲库监控界面</h1>
 
-<!-- 顶部状态栏 -->
+<!-- 顶部导航（5 页） -->
+<nav class="nav">
+  <button class="active" onclick="switchPage('overview', this)">总览</button>
+  <button onclick="switchPage('plcdetail', this)">PLC 详情</button>
+  <button onclick="switchPage('cmds', this)">命令</button>
+  <button onclick="switchPage('events', this)">事件/告警</button>
+  <button onclick="switchPage('logs', this)">日志</button>
+</nav>
+
+<!-- 顶部状态栏（所有页可见） -->
 <div class="bar" id="statusbar">加载中…</div>
 
-<!-- PLC 卡片 -->
-<div id="plcs"></div>
-
-<!-- 手动命令 -->
-<div class="card">
-  <h2>手动命令</h2>
-  <div class="cmd">
-    <select id="cmdType"><option value="install">安装 (Install)</option><option value="remove">移除 (Remove)</option></select>
-    <input id="loc" placeholder="位置，如 Buffer1_Port3" size="16">
-    <input id="carrierId" placeholder="载具 ID（安装时）" size="18">
-    <button onclick="askConfirm()">执行</button>
-    <span id="cmdMsg"></span>
+<!-- 页 1：总览（15 台紧凑表） -->
+<div id="page-overview" class="page active">
+  <div class="card">
+    <h2>PLC 总览</h2>
+    <table class="list" id="tbl-overview">
+      <thead><tr><th>#</th><th>状态</th><th>IP</th><th>告警汇总</th><th>有货站口</th><th>轮询</th><th>错误</th><th>重连</th><th>命令(败)</th></tr></thead>
+      <tbody></tbody>
+    </table>
   </div>
 </div>
 
-<!-- 活动面板 -->
-<div class="card">
-  <div class="tabbar">
-    <button class="active" onclick="switchTab('events', this)">事件流</button>
-    <button onclick="switchTab('cmds', this)">命令</button>
-    <button onclick="switchTab('alarmhist', this)">告警历史</button>
-    <button onclick="switchTab('alarms', this)">当前告警</button>
+<!-- 页 2：PLC 详情（单台 16 站口 + 完整寄存器视图） -->
+<div id="page-plcdetail" class="page">
+  <div class="card">
+    <h2>PLC 详情
+      <select id="detPlc" onchange="detPlcChanged()"></select>
+      <span id="detStat"></span>
+    </h2>
+    <div class="grid" id="detGrid"></div>
   </div>
-  <div id="tab-events" class="tabpanel active"><table class="list" id="tbl-events"></table></div>
-  <div id="tab-cmds" class="tabpanel"><table class="list" id="tbl-cmds"></table></div>
-  <div id="tab-alarmhist" class="tabpanel"><table class="list" id="tbl-alarmhist"></table></div>
-  <div id="tab-alarms" class="tabpanel"><table class="list" id="tbl-alarms"></table></div>
+  <div class="card">
+    <h2>寄存器视图（字节序 <span id="detByteOrder">—</span>）</h2>
+    <div class="reg-cols">
+      <div class="reg-col">
+        <h3>状态区 0~49 <span class="stat-line">（自动刷新）</span></h3>
+        <table class="reg-table" id="tbl-reg-status"></table>
+      </div>
+      <div class="reg-col">
+        <h3>回显/握手 306~340 <span class="stat-line">（自动刷新）</span></h3>
+        <table class="reg-table" id="tbl-reg-echo"></table>
+      </div>
+      <div class="reg-col">
+        <h3>ID 区 50~305 <button onclick="readIdRaw()">读原始值</button></h3>
+        <table class="reg-table" id="tbl-reg-id"></table>
+        <div class="reg-raw" id="regIdRaw"><span class="stat-line">HEX 列点「读原始值」拉取 50~305（FC03×3）</span></div>
+      </div>
+      <div class="reg-col">
+        <h3>命令区 400~672 <button onclick="readCmdRaw()">读取</button></h3>
+        <table class="reg-table" id="tbl-reg-cmd"></table>
+        <div class="reg-raw" id="regCmdRaw"><span class="stat-line">点「读取」拉取 400~672（真 PLC 可能不映射该区，失败不影响其它栏）</span></div>
+      </div>
+    </div>
+  </div>
 </div>
 
-<!-- 日志面板 -->
-<div class="card">
-  <h2>运行日志 <span style="font-weight:normal;font-size:12px;color:#666" id="logState"></span></h2>
-  <div class="log-filter" id="logFilter">
-    <button onclick="setLogFilter('')">全部</button>
-    <button onclick="setLogFilter('PLC')">PLC</button>
-    <button onclick="setLogFilter('MCS')">MCS 帧</button>
-    <button onclick="setLogFilter('CMD')">命令</button>
-    <button onclick="setLogFilter('告警')">告警</button>
-    <button onclick="setLogFilter('HSMS')">连接</button>
-    <button onclick="toggleLogPause()" id="logPauseBtn">暂停</button>
+<!-- 页 3：命令（手动命令 + PLC 调试） -->
+<div id="page-cmds" class="page">
+  <!-- 手动命令 -->
+  <div class="card">
+    <h2>手动命令</h2>
+    <div class="cmd">
+      <select id="cmdType"><option value="install">安装 (Install)</option><option value="remove">移除 (Remove)</option></select>
+      <input id="loc" placeholder="位置，如 Buffer1_Port3 / 1号Buffer_3号站口" size="24">
+      <input id="carrierId" placeholder="载具 ID（安装时）" size="18">
+      <button onclick="askConfirm()">执行</button>
+      <span id="cmdMsg"></span>
+    </div>
   </div>
-  <div class="logs" id="logs"></div>
+
+  <!-- PLC 调试（联调用：命令直发 + 寄存器直读直写，绕过业务副作用） -->
+  <div class="card">
+    <h2>PLC 调试（命令直发 / 寄存器直写）</h2>
+    <div class="cmd">
+      <input id="dbgPlc" placeholder="PLC 编号，如 1 / 1号Buffer" size="14">
+      <input id="dbgStation" placeholder="站口 1~16" size="7">
+      <input id="dbgCmd" placeholder="命令码(1=写ID 2=清除)" size="14">
+      <input id="dbgCarrierId" placeholder="载具 ID（命令 1 必填）" size="18">
+      <button onclick="dbgAskCmd()">下发命令</button>
+      <span id="dbgMsg"></span>
+    </div>
+    <div class="cmd">
+      <input id="dbgWAddr" placeholder="写地址，如 340" size="10">
+      <input id="dbgWVal" placeholder="写值(逗号分隔)，如 0" size="16">
+      <button onclick="dbgAskWrite()">写寄存器</button>
+    </div>
+    <div class="logs" id="dbgResult" style="height:150px;font-family:monospace;font-size:12px"></div>
+  </div>
+</div>
+
+<!-- 页 4：事件/告警（活动面板） -->
+<div id="page-events" class="page">
+  <div class="card">
+    <div class="tabbar">
+      <button class="active" onclick="switchTab('events', this)">事件流</button>
+      <button onclick="switchTab('cmds', this)">命令</button>
+      <button onclick="switchTab('alarmhist', this)">告警历史</button>
+      <button onclick="switchTab('alarms', this)">当前告警</button>
+    </div>
+    <div id="tab-events" class="tabpanel active"><table class="list" id="tbl-events"></table></div>
+    <div id="tab-cmds" class="tabpanel"><table class="list" id="tbl-cmds"></table></div>
+    <div id="tab-alarmhist" class="tabpanel"><table class="list" id="tbl-alarmhist"></table></div>
+    <div id="tab-alarms" class="tabpanel"><table class="list" id="tbl-alarms"></table></div>
+  </div>
+</div>
+
+<!-- 页 5：日志 -->
+<div id="page-logs" class="page">
+  <div class="card">
+    <h2>运行日志 <span style="font-weight:normal;font-size:12px;color:#666" id="logState"></span></h2>
+    <div class="log-filter" id="logFilter">
+      <button onclick="setLogFilter('');setLogWord('')">全部</button>
+      <button onclick="setLogFilter('PLC')">PLC</button>
+      <button onclick="setLogFilter('MCS')">MCS 帧</button>
+      <button onclick="setLogFilter('CMD')">命令</button>
+      <button onclick="setLogWord('异常|失败|超时|错误')">异常</button>
+      <button onclick="setLogFilter('HSMS')">连接</button>
+      <button onclick="setLogLevel('')">级别:全部</button>
+      <button onclick="setLogLevel('info')">Info</button>
+      <button onclick="setLogLevel('debug')">Debug</button>
+      <button onclick="setLogLevel('trace')">Trace</button>
+      <button onclick="toggleLogPause()" id="logPauseBtn">暂停</button>
+    </div>
+    <div class="logs" id="logs"></div>
+  </div>
 </div>
 
 <!-- 二次确认弹窗 -->
@@ -112,69 +203,254 @@
 </div>
 
 <script>
-const ST = { 0: '空', 1: '有货', 2: '正放', 3: '正取', 4: '故障' };
-let logFilter = '', logPaused = false, pendingCmd = null;
+const ST = { 0: '空', 1: '有货', 2: '正放', 3: '正取', 4: '故障', 5: '人工有货' };
+let logFilter = '', logPaused = false, logLevel = '', logWord = '', pendingCmd = null, pendingDbg = null;
+let lastRenderedSeq = 0, needFullRerender = true;
+let curPage = 'overview';
+let overviewKey = '';
+let detPlc = null, detBuilt = false;
 
 function fmtTime(t) { return t ? new Date(t).toLocaleString('zh-CN', { hour12: false }) : '—'; }
 function fmtDur(ms) { return ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(1) + 's'; }
 function clsForLog(line) {
+  if (line.level === 'Trace') return 'l-trace';
+  if (line.level === 'Debug') return 'l-debug';
   if (line.category === 'CMD' || line.category === 'S2F41') return 'l-cmd';
   if (line.message.includes('异常') || line.message.includes('失败') || line.message.includes('超时')) return 'l-err';
   if (line.message.includes('已连接') || line.message.includes('OK')) return 'l-ok';
   if (line.category === '←MCS' || line.category === '→MCS') return 'l-frame';
   return '';
 }
+function logRow(l) { return `<div><span class="t">${fmtTime(l.time)}</span> <span class="c">[${l.category}]</span> <span class="${clsForLog(l)}">${l.message.replace(/</g, '&lt;')}</span></div>`; }
+function wordOk(l) { return !logWord || logWord.split('|').some(w => l.message.includes(w)); }
 
+// ---------- 页面切换 ----------
+function switchPage(name, btn) {
+  curPage = name;
+  document.querySelectorAll('.nav button').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.getElementById('page-' + name).classList.add('active');
+  if (name === 'plcdetail') { detBuilt = false; loadStatus(); }
+  if (name === 'events') loadActivity();
+  if (name === 'logs') { needFullRerender = true; loadLogs(); }
+}
+
+// ---------- 状态轮询（常开：状态栏 + 当前页共用） ----------
 async function loadStatus() {
   try {
     const s = await (await fetch('/api/status')).json();
-    const online = s.plcs.filter(p => p.connected).length;
-    const mcs = s.mcs, sys = s.system;
-    document.getElementById('statusbar').innerHTML =
-      `<span class="kv">MCS: <b>${s.hsmsConnected ? '<span class="badge b-ok">ONLINE</span>' : '<span class="badge b-off">OFFLINE</span>'}</b>` +
-      (s.hsmsConnected ? ` ${mcs.peerEndpoint || ''} 时长:${fmtDur(Date.now() - new Date(mcs.establishedAt).getTime())} 收:${mcs.messagesIn} 发:${mcs.messagesOut} 发失败:${mcs.sendFail} T3:${mcs.t3Timeout} 对端:${mcs.peerMdln || '—'} ${mcs.peerSoftRev || ''}` : '') + `</span>` +
-      `<span class="kv">PLC: <b>${online}/${s.plcs.length}</b> 在线</span>` +
-      `<span class="kv">告警: <b>${s.alarms.length}</b></span>` +
-      `<span class="kv">运行: <b>${fmtDur(Date.now() - new Date(sys.startedAt).getTime())}</b></span>` +
-      `<span class="kv">版本: <b>${sys.mdln} ${sys.softRev}</b></span>` +
-      `<span class="kv">字节序: <b>${sys.byteOrderSummary || '—'}</b></span>`;
-
-    let html = '';
-    for (const p of s.plcs) {
-      const st = p.stats;
-      html += `<div class="card"><h2>${p.index} 号 Buffer <span class="badge ${p.connected ? 'b-ok' : 'b-err'}">${p.connected ? '在线' : '离线'}</span>` +
-        `<span style="font-weight:normal;font-size:12px;color:#666">${p.ip}</span>` +
-        `<span class="stat-line">轮询:${st.pollCount} 错误:${st.errorCount} 重连:${st.reconnectCount} 命令:${st.commandCount}/${st.commandFailCount}败 最后轮询:${fmtTime(st.lastPollAt)}` +
-        (st.lastError ? ` <span class="fail-txt">最后错误:${st.lastError}</span>` : '') + `</span></h2>`;
-      html += `<div class="grid">`;
-      for (const x of p.stations) {
-        const cls = 'st' + (x.state >= 5 ? 99 : x.state);
-        html += `<div class="cell ${cls}" title="站${x.station} 状态${x.state}(${ST[x.state] ?? '?'}) 告警码${x.alarm} 可用${x.avail ? '下线' : '在线'} 安装:${x.installTime || '—'}">
-          站${x.station}<br>${x.carrierId ? x.carrierId : '—'}${x.truncated ? ' <span class="trunc">截断</span>' : ''}${x.alarm ? ' <span style="background:#ffeb3b;color:#000;border-radius:3px;padding:0 3px">A' + x.alarm + '</span>' : ''}${x.avail ? '<span class="offline-mark">下线</span>' : ''}</div>`;
-      }
-      html += `</div>`;
-      const r = p.registers;
-      html += `<details><summary>寄存器视图（读区 0~49 + 306~340，字节序 ${r.byteOrder}）</summary>
-        <table class="reg-table"><tr><th>地址</th><th>值</th><th>含义</th></tr>
-        <tr><td>0</td><td>${r.bufferNo}</td><td>Buffer 编号</td></tr>
-        <tr><td>1</td><td>${r.alarmSummary}</td><td>告警汇总</td></tr>
-        ${r.echoStation.map((v, i) => `<tr><td>${2 + i}</td><td>${p.stations[i].state}</td><td>站口${i + 1} 状态</td></tr>`).join('')}
-        ${p.stations.map((x, i) => `<tr><td>${18 + i}</td><td>${x.alarm}</td><td>站口${i + 1} 告警码</td></tr>`).join('')}
-        ${p.stations.map((x, i) => `<tr><td>${34 + i}</td><td>${x.avail}</td><td>站口${i + 1} 可用(0=在线 1=下线)</td></tr>`).join('')}
-        <tr><td>306</td><td>${r.echoNo}</td><td>命令编号回显</td></tr>
-        ${r.echoStation.map((v, i) => `<tr><td>${307 + i}</td><td>${v}</td><td>站口${i + 1} 命令回显</td></tr>`).join('')}
-        <tr><td>323</td><td>${r.scanStation}</td><td>扫码站口号</td></tr>
-        <tr><td>324~339</td><td>${r.scanCode || '—'}</td><td>货物扫码号</td></tr>
-        <tr><td>340</td><td>${r.handshake}</td><td>握手(1=PLC请求 0=已应答)</td></tr>
-        </table></details>`;
-      html += `</div>`;
-    }
-    document.getElementById('plcs').innerHTML = html;
+    fillPlcSelects(s.plcs);
+    renderStatusBar(s);
+    if (curPage === 'overview') renderOverview(s);
+    if (curPage === 'plcdetail') renderDetail(s);
   } catch (e) {
     document.getElementById('statusbar').innerHTML = `<span class="badge b-err">加载失败: ${e}</span>`;
   }
 }
 
+function renderStatusBar(s) {
+  const online = s.plcs.filter(p => p.connected).length;
+  const mcs = s.mcs, sys = s.system;
+  document.getElementById('statusbar').innerHTML =
+    `<span class="kv">MCS: <b>${s.hsmsConnected ? '<span class="badge b-ok">ONLINE</span>' : '<span class="badge b-off">OFFLINE</span>'}</b>` +
+    (s.hsmsConnected ? ` ${mcs.peerEndpoint || ''} 时长:${fmtDur(Date.now() - new Date(mcs.establishedAt).getTime())} 收:${mcs.messagesIn} 发:${mcs.messagesOut} 发失败:${mcs.sendFail} T3:${mcs.t3Timeout} 对端:${mcs.peerMdln || '—'} ${mcs.peerSoftRev || ''}` : '') + `</span>` +
+    `<span class="kv">PLC: <b>${online}/${s.plcs.length}</b> 在线</span>` +
+    `<span class="kv">告警: <b>${s.alarms.length}</b></span>` +
+    `<span class="kv">运行: <b>${fmtDur(Date.now() - new Date(sys.startedAt).getTime())}</b></span>` +
+    `<span class="kv">版本: <b>${sys.mdln} ${sys.softRev}</b></span>` +
+    `<span class="kv">字节序: <b>${sys.byteOrderSummary || '—'}</b></span>`;
+}
+
+// ---------- 总览：15 台紧凑表（首建 + 原地更新） ----------
+function renderOverview(s) {
+  const tbody = document.querySelector('#tbl-overview tbody');
+  const key = s.plcs.map(p => p.index).join(',');
+  if (key !== overviewKey) {
+    overviewKey = key;
+    tbody.innerHTML = s.plcs.map(p => `
+      <tr id="ov-${p.index}">
+        <td>${p.index} 号 Buffer</td>
+        <td data-k="state"></td>
+        <td data-k="ip">${p.ip}</td>
+        <td data-k="alarm"></td>
+        <td data-k="occ"></td>
+        <td data-k="poll"></td>
+        <td data-k="err"></td>
+        <td data-k="rc"></td>
+        <td data-k="cmd"></td>
+      </tr>`).join('');
+  }
+  for (const p of s.plcs) {
+    const row = document.getElementById('ov-' + p.index);
+    if (!row) continue;
+    const st = p.stats;
+    const occ = p.stations.filter(x => x.state === 1 || x.state === 5).length;
+    row.querySelector('[data-k=state]').innerHTML = `<span class="badge ${p.connected ? 'b-ok' : 'b-off'}">${p.connected ? '在线' : '离线'}</span>`;
+    row.querySelector('[data-k=alarm]').innerHTML = p.registers.alarmSummary ? `<span class="badge b-err">${p.registers.alarmSummary}</span>` : '—';
+    row.querySelector('[data-k=occ]').textContent = `${occ}/16`;
+    row.querySelector('[data-k=poll]').textContent = st.pollCount;
+    row.querySelector('[data-k=err]').innerHTML = st.errorCount ? `<span class="fail-txt">${st.errorCount}</span>` : '0';
+    row.querySelector('[data-k=rc]').textContent = st.reconnectCount;
+    row.querySelector('[data-k=cmd]').textContent = `${st.commandCount}(${st.commandFailCount})`;
+  }
+}
+
+// ---------- PLC 详情：单台 16 站口 + 完整寄存器视图（原地更新防缩回） ----------
+function fillPlcSelects(plcs) {
+  // PLC 详情页选择器（下拉）；调试面板为手填输入（dbgPlcNum 解析）
+  const sel = document.getElementById('detPlc');
+  const cur = sel.value;
+  sel.innerHTML = plcs.map(p =>
+    `<option value="${p.index}" ${String(p.index) === cur ? 'selected' : ''}>${p.index} 号 Buffer（${p.connected ? '在线' : '离线'}）</option>`).join('');
+  if (!sel.value && plcs.length) sel.value = plcs[0].index;
+}
+
+function detPlcChanged() { detBuilt = false; loadStatus(); }
+
+function getDetPlc(s) {
+  const sel = document.getElementById('detPlc');
+  if (sel.value) detPlc = +sel.value;
+  else if (!detPlc || !s.plcs.some(p => p.index === detPlc)) detPlc = s.plcs.length ? s.plcs[0].index : null;
+  if (detPlc != null && sel.value !== String(detPlc)) sel.value = detPlc;
+  return detPlc == null ? null : s.plcs.find(p => p.index === detPlc) || null;
+}
+
+function buildDetail(p) {
+  document.getElementById('detByteOrder').textContent = p.registers.byteOrder;
+  document.getElementById('detGrid').innerHTML =
+    Array.from({ length: 16 }, (_, i) => `<div class="cell" id="det-cell-${i + 1}"></div>`).join('');
+
+  const tr = (addr, key, name) => `<tr><td>${addr}</td><td data-r="${key}"></td><td>${name}</td></tr>`;
+  // 严格按地址 0→49 从上到下排（0 编号、1 告警汇总、2~17 站口状态、18~33 站口告警码、34~49 站口可用）
+  let html = tr(0, 0, 'Buffer 编号') + tr(1, 1, '告警汇总');
+  for (let i = 0; i < 16; i++) html += tr(2 + i, 2 + i, `站口${i + 1} 状态`);
+  for (let i = 0; i < 16; i++) html += tr(18 + i, 18 + i, `站口${i + 1} 告警码`);
+  for (let i = 0; i < 16; i++) html += tr(34 + i, 34 + i, `站口${i + 1} 可用(0=在线 1=下线)`);
+  document.getElementById('tbl-reg-status').innerHTML = '<tr><th>地址</th><th>值</th><th>含义</th></tr>' + html;
+
+  html = tr(306, 306, '命令编号回显');
+  for (let i = 0; i < 16; i++) html += tr(307 + i, 307 + i, `站口${i + 1} 命令回显`);
+  html += tr(323, 323, '扫码站口号') + `<tr><td>324~339</td><td id="det-scan"></td><td>货物扫码号</td></tr>` + tr(340, 340, '握手(1=PLC请求)');
+  document.getElementById('tbl-reg-echo').innerHTML = '<tr><th>地址</th><th>值</th><th>含义</th></tr>' + html;
+
+  html = '<tr><th>站口</th><th>地址</th><th>载具ID（快照）</th><th>HEX（原始值）</th></tr>';
+  for (let st = 1; st <= 16; st++)
+    html += `<tr><td>站口${st}</td><td class="mono">${50 + (st - 1) * 16}~${65 + (st - 1) * 16}</td><td data-sid="${st}"></td><td class="mono" data-hid="${st}">—</td></tr>`;
+  document.getElementById('tbl-reg-id').innerHTML = html;
+
+  html = '<tr><th>地址</th><th>值</th><th>含义</th></tr>' + tr(400, 'c0', '命令编号（写入）');
+  for (let st = 1; st <= 16; st++) html += tr(401 + st - 1, `c${st}`, `站口${st} 命令`);
+  document.getElementById('tbl-reg-cmd').innerHTML = html;
+
+  detBuilt = true;
+}
+
+function renderDetail(s) {
+  const p = getDetPlc(s);
+  if (!p) { document.getElementById('detStat').textContent = '（无 PLC 配置）'; return; }
+  if (!detBuilt) buildDetail(p);
+
+  // 统计行
+  const st = p.stats;
+  document.getElementById('detStat').innerHTML =
+    `<span class="stat-line">轮询:${st.pollCount} 错误:${st.errorCount} 重连:${st.reconnectCount} 命令:${st.commandCount}/${st.commandFailCount}败 最后轮询:${fmtTime(st.lastPollAt)}` +
+    (st.lastError ? ` <span class="fail-txt">最后错误:${st.lastError}</span>` : '') + `</span>`;
+
+  // 16 站口网格（原地更新）
+  for (const x of p.stations) {
+    const cell = document.getElementById('det-cell-' + x.station);
+    if (!cell) continue;
+    cell.className = 'cell st' + (x.state >= 5 ? 99 : x.state);
+    cell.innerHTML = `站${x.station}<br>${x.carrierId ? x.carrierId : '—'}${x.truncated ? ' <span class="trunc">截断</span>' : ''}` +
+      (x.alarm ? ` <span style="background:#ffeb3b;color:#000;border-radius:3px;padding:0 3px">A${x.alarm}</span>` : '') +
+      (x.avail ? '<span class="offline-mark">下线</span>' : '');
+  }
+
+  // 寄存器值表（原地更新，[data-r] 按地址填值）
+  const r = p.registers;
+  const v = {};
+  v[0] = r.bufferNo; v[1] = r.alarmSummary;
+  for (let i = 0; i < 16; i++) { v[2 + i] = p.stations[i].state; v[18 + i] = p.stations[i].alarm; v[34 + i] = p.stations[i].avail; }
+  v[306] = r.echoNo;
+  for (let i = 0; i < 16; i++) v[307 + i] = r.echoStation[i];
+  v[323] = r.scanStation; v[340] = r.handshake;
+  for (const td of document.querySelectorAll('#page-plcdetail [data-r]'))
+    if (td.dataset.r in v) td.textContent = v[td.dataset.r];   // 仅快照键（c* 命令区按需读取的值不覆盖）
+  document.getElementById('det-scan').textContent = r.scanCode || '—';
+
+  // ID 区快照字符串（原地更新）
+  for (const x of p.stations) {
+    const td = document.querySelector(`#tbl-reg-id [data-sid="${x.station}"]`);
+    if (td) td.innerHTML = x.carrierId ? `${x.carrierId}${x.truncated ? ' <span class="trunc">截断</span>' : ''}` : '—';
+  }
+}
+
+// ---------- ID 区 / 命令区 按需原始读取（/api/debug/regread，FC03 分段 125 上限） ----------
+async function readRegBlocks(plc, addr, total) {
+  const vals = [];
+  for (let a = addr; a < addr + total; a += 125) {
+    const n = Math.min(125, addr + total - a);
+    const r = await fetch(`/api/debug/regread?plc=${plc}&addr=${a}&count=${n}`);
+    if (!r.ok) throw new Error(`${addr}~${addr + total - 1} 段 ${a} 起 ${n} 字读取失败`);
+    const d = await r.json();
+    vals.push(...d.values);
+  }
+  return vals;
+}
+
+// 与 RegisterMap.UnpackAscii 一致的客户端解包（high/low 字节序，去尾部 \0 与空白）
+function unpackAscii(words, byteOrder) {
+  const highFirst = byteOrder !== 'low';
+  let s = '';
+  for (const w of words) {
+    const lo = highFirst ? (w & 0xFF) : (w >> 8);
+    const hi = highFirst ? (w >> 8) : (w & 0xFF);
+    for (const b of [lo, hi]) s += b >= 32 && b < 127 ? String.fromCharCode(b) : '';
+  }
+  return s.trimEnd();
+}
+const hex4 = w => w.toString(16).padStart(4, '0');
+
+async function readIdRaw() {
+  if (detPlc == null) return;
+  const box = document.getElementById('regIdRaw');
+  box.innerHTML = '<span class="stat-line">读取中…</span>';
+  try {
+    const vals = await readRegBlocks(detPlc, 50, 256);
+    const bo = document.getElementById('detByteOrder').textContent;
+    for (let st = 1; st <= 16; st++) {
+      const words = vals.slice((st - 1) * 16, st * 16);
+      const td = document.querySelector(`#tbl-reg-id [data-hid="${st}"]`);
+      if (td) td.innerHTML = `<div>${unpackAscii(words, bo) || '—'}</div><div class="mono">${words.map(hex4).join(' ')}</div>`;
+    }
+    box.innerHTML = `<span class="ok-txt">已读 50~305（256 字）</span>`;
+  } catch (e) { box.innerHTML = `<span class="fail-txt">${e.message}</span>`; }
+}
+
+async function readCmdRaw() {
+  if (detPlc == null) return;
+  const box = document.getElementById('regCmdRaw');
+  box.innerHTML = '<span class="stat-line">读取中…</span>';
+  try {
+    const vals = await readRegBlocks(detPlc, 400, 273);
+    const bo = document.getElementById('detByteOrder').textContent;
+    const c0 = document.querySelector('#tbl-reg-cmd [data-r="c0"]');
+    if (c0) c0.textContent = vals[0];
+    for (let st = 1; st <= 16; st++) {
+      const td = document.querySelector(`#tbl-reg-cmd [data-r="c${st}"]`);
+      if (td) td.textContent = vals[st];
+    }
+    let html = '';
+    for (let st = 1; st <= 16; st++) {
+      const words = vals.slice(17 + (st - 1) * 16, 17 + st * 16);
+      html += `<div>站口${st}（${417 + (st - 1) * 16}~${432 + (st - 1) * 16}）: "${unpackAscii(words, bo) || '—'}" <span class="mono">${words.map(hex4).join(' ')}</span></div>`;
+    }
+    box.innerHTML = html;
+  } catch (e) { box.innerHTML = `<span class="fail-txt">${e.message}</span>`; }
+}
+
+// ---------- 活动面板（事件/命令/告警，仅本页激活时轮询） ----------
 async function loadActivity() {
   try {
     const [ev, cmd, hist, alarms] = await Promise.all([
@@ -202,26 +478,36 @@ async function loadActivity() {
   } catch (e) { /* 忽略瞬时错误 */ }
 }
 
+// ---------- 日志（仅本页激活时轮询） ----------
 async function loadLogs() {
   if (logPaused) return;
   try {
-    const url = '/api/logs?tail=200' + (logFilter ? '&category=' + encodeURIComponent(logFilter) : '');
+    const url = '/api/logs?tail=200' + (logFilter ? '&category=' + encodeURIComponent(logFilter) : '') + (logLevel ? '&level=' + logLevel : '');
     const logs = await (await fetch(url)).json();
     const box = document.getElementById('logs');
     const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 30;
-    box.innerHTML = logs.map(l =>
-      `<div><span class="t">${fmtTime(l.time)}</span> <span class="c">[${l.category}]</span> <span class="${clsForLog(l)}">${l.message.replace(/</g, '&lt;')}</span></div>`).join('');
+    // 过滤/级别/暂停恢复 → 全量重绘；普通轮询按 seq 增量追加（避免全量 innerHTML 重绘丢滚动）
+    if (needFullRerender) {
+      box.innerHTML = logs.filter(wordOk).map(logRow).join('');
+      needFullRerender = false;
+    } else {
+      for (const l of logs) if (l.seq > lastRenderedSeq && wordOk(l)) box.insertAdjacentHTML('beforeend', logRow(l));
+    }
+    if (logs.length) lastRenderedSeq = logs[logs.length - 1].seq;
     if (atBottom) box.scrollTop = box.scrollHeight;
   } catch (e) { /* 忽略瞬时错误 */ }
 }
 
-function setLogFilter(f) { logFilter = f; document.querySelectorAll('#logFilter button').forEach(b => b.style.fontWeight = ''); loadLogs(); }
+function setLogFilter(f) { logFilter = f; needFullRerender = true; loadLogs(); }
+function setLogWord(w) { logWord = w; needFullRerender = true; loadLogs(); }
+function setLogLevel(l) { logLevel = l; needFullRerender = true; loadLogs(); }
 function toggleLogPause() {
   logPaused = !logPaused;
   const btn = document.getElementById('logPauseBtn');
   btn.textContent = logPaused ? '继续' : '暂停';
   document.getElementById('logState').textContent = logPaused ? '（已暂停）' : '';
-  if (!logPaused) loadLogs();
+  document.getElementById('logs').classList.toggle('paused', logPaused);
+  if (!logPaused) { needFullRerender = true; loadLogs(); }
 }
 function switchTab(name, btn) {
   document.querySelectorAll('.tabpanel').forEach(p => p.classList.remove('active'));
@@ -230,6 +516,7 @@ function switchTab(name, btn) {
   btn.classList.add('active');
 }
 
+// ---------- 手动命令（业务路径，二次确认） ----------
 function askConfirm() {
   const type = document.getElementById('cmdType').value;
   const loc = document.getElementById('loc').value.trim();
@@ -242,17 +529,88 @@ function askConfirm() {
 }
 async function doSendCmd(confirm) {
   document.getElementById('confirmBox').style.display = 'none';
-  if (!confirm || !pendingCmd) return;
+  if (!confirm) { pendingCmd = null; pendingDbg = null; return; }
+  if (pendingDbg) { await doSendDbg(pendingDbg); pendingDbg = null; return; }
+  if (!pendingCmd) return;
   const r = await fetch('/api/command', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(pendingCmd) });
   document.getElementById('cmdMsg').textContent = r.ok ? '命令已执行' : '执行失败（检查位置/载具 ID）';
   pendingCmd = null;
 }
 async function ack(id) { await fetch('/api/alarms/' + id + '/ack', { method: 'POST' }); loadActivity(); }
 
-loadStatus(); loadActivity(); loadLogs();
+// ---------- PLC 调试面板（命令直发 + 寄存器直读直写，绕过业务） ----------
+function dbgAdd(msg) {
+  const box = document.getElementById('dbgResult');
+  box.insertAdjacentHTML('beforeend',
+    `<div><span class="t">${new Date().toLocaleTimeString('zh-CN', { hour12: false })}</span> ${msg}</div>`);
+  box.scrollTop = box.scrollHeight;
+  while (box.children.length > 200) box.removeChild(box.firstChild);
+}
+async function dbgReadAt(plc, addr, count) {
+  const r = await fetch(`/api/debug/regread?plc=${plc}&addr=${addr}&count=${count}`);
+  if (!r.ok) { dbgAdd(`PLC${plc} 读 ${addr} 起 ${count} 字失败（离线/参数错误）`); return; }
+  const d = await r.json();
+  dbgAdd(`PLC${d.plc} 读 ${d.addr} 起 ${d.values.length} 字: ` +
+    d.values.map((v, i) => `${d.addr + i}=${v}(0x${v.toString(16).padStart(4, '0')})`).join(' '));
+}
+// 调试面板手填输入解析：PLC 取第一个数字（支持 "1" / "1号Buffer"），站口取数字
+function dbgPlcNum() {
+  const m = document.getElementById('dbgPlc').value.trim().match(/\d+/);
+  return m ? +m[0] : NaN;
+}
+function dbgStNum() { return parseInt(document.getElementById('dbgStation').value.trim(), 10); }
+
+function dbgAskCmd() {
+  const plc = dbgPlcNum();
+  const st = dbgStNum();
+  const cmd = parseInt(document.getElementById('dbgCmd').value.trim(), 10);
+  const id = document.getElementById('dbgCarrierId').value.trim();
+  const msg = document.getElementById('dbgMsg');
+  if (isNaN(plc)) { msg.textContent = '请填写 PLC 编号（如 1 / 1号Buffer）'; return; }
+  if (isNaN(st) || st < 1 || st > 16) { msg.textContent = '站口需为 1~16'; return; }
+  if (isNaN(cmd) || cmd < 0 || cmd > 65535) { msg.textContent = '命令码需为 0~65535 的数字'; return; }
+  if (cmd === 1 && !id) { msg.textContent = '命令 1 需填写载具 ID'; return; }
+  msg.textContent = '';
+  pendingDbg = { kind: 'cmd', plc: plc, station: st, cmd: cmd, carrierId: id };
+  document.getElementById('confirmText').innerHTML =
+    `<b>PLC 调试直发</b>：<br>PLC${plc} 站口 ${st} 命令 ${cmd}${cmd === 1 ? `<br>载具 <b>${id}</b>` : ''}`;
+  document.getElementById('confirmBox').style.display = 'flex';
+}
+function dbgAskWrite() {
+  const plc = dbgPlcNum();
+  const addr = document.getElementById('dbgWAddr').value.trim();
+  const vals = document.getElementById('dbgWVal').value.trim();
+  if (isNaN(plc) || addr === '' || vals === '') { dbgAdd('写寄存器需 PLC 编号+地址+值'); return; }
+  const v = vals.split(',').map(x => parseInt(x.trim(), 10));
+  if (v.some(isNaN)) { dbgAdd('值必须为数字（逗号分隔）'); return; }
+  pendingDbg = { kind: 'write', plc: plc, addr: +addr, values: v };
+  document.getElementById('confirmText').innerHTML =
+    `<b>⚠ 直写 PLC 寄存器</b>：<br>PLC${plc} 起始地址 ${addr}，共 ${v.length} 字<br>值 ${v.join(',')}`;
+  document.getElementById('confirmBox').style.display = 'flex';
+}
+async function doSendDbg(d) {
+  try {
+    if (d.kind === 'cmd') {
+      const r = await fetch('/api/debug/cmd', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plc: d.plc, station: d.station, cmd: d.cmd, carrierId: d.carrierId }) });
+      const j = await r.json();
+      document.getElementById('dbgMsg').textContent = r.ok && j.ok ? `命令已执行 OK（${j.elapsedMs}ms）` : '命令执行失败（见结果区）';
+      dbgAdd(`下发 PLC${d.plc} 站口${d.station} 命令${d.cmd} ${d.carrierId || ''} → ${r.ok && j.ok ? 'OK' : 'FAIL'}（${j.elapsedMs}ms）`);
+      if (r.ok) await dbgReadAt(d.plc, 306, 17);   // 读回显区核对（306 编号 + 307~322 站口回显）
+    } else if (d.kind === 'write') {
+      const r = await fetch('/api/debug/regwrite', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plc: d.plc, addr: d.addr, values: d.values }) });
+      dbgAdd(`写 PLC${d.plc} 起始 ${d.addr} 共 ${d.values.length} 字 ${d.values.join(',')} → ${r.ok ? 'OK' : 'FAIL'}`);
+      if (r.ok) await dbgReadAt(d.plc, d.addr, d.values.length);
+    }
+  } catch (e) { dbgAdd(`执行失败: ${e}`); }
+}
+
+// ---------- 轮询调度（status 常开；活动/日志仅激活页） ----------
+loadStatus();
 setInterval(loadStatus, 1500);
-setInterval(loadActivity, 3000);
-setInterval(loadLogs, 2000);
+setInterval(() => { if (curPage === 'events') loadActivity(); }, 3000);
+setInterval(() => { if (curPage === 'logs') loadLogs(); }, 2000);
 </script>
 </body>
 </html>

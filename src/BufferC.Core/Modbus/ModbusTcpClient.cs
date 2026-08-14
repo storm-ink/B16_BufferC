@@ -18,6 +18,9 @@ public sealed class ModbusTcpClient : IDisposable
 
     public bool Connected => _tcp?.Connected == true;
 
+    /// <summary>帧级日志钩子（isTx=true 发送 / false 接收；参数为完整 MBAP+PDU 帧）；联调 trace 级日志用</summary>
+    public event Action<bool, byte[]>? Frame;
+
     public ModbusTcpClient(string host, int port, byte unit, int timeoutMs = 3000)
     {
         _host = host;
@@ -79,19 +82,25 @@ public sealed class ModbusTcpClient : IDisposable
 
     public void WriteMultipleRegisters(ushort address, ushort[] values)
     {
-        var pdu = new byte[6 + values.Length * 2];
-        pdu[0] = 0x10;
-        pdu[1] = (byte)(address >> 8); pdu[2] = (byte)address;
-        pdu[3] = (byte)(values.Length >> 8); pdu[4] = (byte)values.Length;
-        pdu[5] = (byte)(values.Length * 2);
-        for (int i = 0; i < values.Length; i++)
+        // FC16 单帧上限 123 字（Modbus 规范，真 PLC 超限拒收）：自动分段逐帧发送
+        const int maxWords = 123;
+        for (int off = 0; off < values.Length; off += maxWords)
         {
-            pdu[6 + i * 2] = (byte)(values[i] >> 8);
-            pdu[7 + i * 2] = (byte)values[i];
+            int count = Math.Min(maxWords, values.Length - off);
+            var pdu = new byte[6 + count * 2];
+            pdu[0] = 0x10;
+            pdu[1] = (byte)((address + off) >> 8); pdu[2] = (byte)(address + off);
+            pdu[3] = (byte)(count >> 8); pdu[4] = (byte)count;
+            pdu[5] = (byte)(count * 2);
+            for (int i = 0; i < count; i++)
+            {
+                pdu[6 + i * 2] = (byte)(values[off + i] >> 8);
+                pdu[7 + i * 2] = (byte)values[off + i];
+            }
+            var resp = Transact(pdu);
+            if (resp[0] == 0x90)
+                throw new ModbusException($"FC16 异常码 {resp[1]} @ {address + off}");
         }
-        var resp = Transact(pdu);
-        if (resp[0] == 0x90)
-            throw new ModbusException($"FC16 异常码 {resp[1]} @ {address}");
     }
 
     private readonly object _ioLock = new();
@@ -119,12 +128,17 @@ public sealed class ModbusTcpClient : IDisposable
         Array.Copy(mbap, frame, 7);
         Array.Copy(pdu, 0, frame, 7, pdu.Length);
         _stream.Write(frame, 0, frame.Length);
+        Frame?.Invoke(true, frame);
 
         // 响应: 7 字节 MBAP（含 unit）+ PDU。length 字段 = unit(1) + PDU，unit 已在 MBAP 内
         var head = ReadExactly(7);
         int respLen = (head[4] << 8) | head[5];
         if (respLen < 2) throw new ModbusException("响应过短");
         var pduResp = ReadExactly(respLen - 1);                // PDU = length - 1
+        var respFrame = new byte[7 + pduResp.Length];
+        Array.Copy(head, respFrame, 7);
+        Array.Copy(pduResp, 0, respFrame, 7, pduResp.Length);
+        Frame?.Invoke(false, respFrame);
         return pduResp;
     }
 

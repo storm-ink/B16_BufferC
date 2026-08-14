@@ -1,3 +1,5 @@
+using BufferC.Core.Modbus;
+
 namespace BufferC.Core.Core;
 
 /// <summary>PLC 变化推导出的事件（CEID 对齐开发文档 §2.6/§3.3）</summary>
@@ -51,6 +53,12 @@ public sealed class EventEngine
     public void MarkScanInstalled(int plcIndex, int station) =>
         _suppress204.Add($"{plcIndex}:{station}");
 
+    /// <summary>AGV 放入完成（状态 2→1）回调：BufferC 用于启动「等扫码窗口 → 无 ID 则找 AGVC 要货物 ID」（方向1）</summary>
+    public Action<int, int>? OnAgvPutCompleted;
+
+    /// <summary>异常状态跳变回调（1→5 / 5→1：货未动却换类型标记）：仅记日志不上报 MCS</summary>
+    public Action<int, int, string>? OnAbnormalTransition;
+
     /// <summary>重连重同步时清除基线（断线期间的变化不补报，只做状态同步）</summary>
     public void Reset(int plcIndex) => _base.Remove(plcIndex);
 
@@ -72,15 +80,32 @@ public sealed class EventEngine
             string key = $"{cur.PlcIndex}:{i + 1}";
             if (b == 1 && a != 1)      // 放入完成（AGV 路径 0→2→1，终点 2→1）
             {
-                if (!_suppress204.Remove(key))   // 扫码路径已上报则跳过
-                    events.Add(new PlcEvent(EventKind.CarrierInstalled, P(
+                if (a == RegisterMap.StManualCarrier)   // 异常跳变 5→1：只记日志不上报
+                {
+                    OnAbnormalTransition?.Invoke(cur.PlcIndex, i + 1, "5→1");
+                }
+                else
+                {
+                    if (a == RegisterMap.StPutting)     // 2→1 = AGV 放入完成（人工 0→5 不触发）
+                        OnAgvPutCompleted?.Invoke(cur.PlcIndex, i + 1);
+                    if (!_suppress204.Remove(key))      // 扫码路径已上报则跳过
+                        events.Add(new PlcEvent(EventKind.CarrierInstalled, P(
+                            "CarrierID", cur.CarrierId[i], "CarrierLoc", Loc(cur.PlcIndex, i + 1), "Station", (i + 1).ToString())));
+                }
+            }
+            else if (b == RegisterMap.StManualCarrier && a != RegisterMap.StManualCarrier) // 人工放入完成（放入即置5，ID 后写→此处可能为空）
+            {
+                if (a == RegisterMap.StHasCarrier)      // 异常跳变 1→5：只记日志不上报
+                    OnAbnormalTransition?.Invoke(cur.PlcIndex, i + 1, "1→5");
+                else
+                    events.Add(new PlcEvent(EventKind.CarrierInstallCompleted, P(
                         "CarrierID", cur.CarrierId[i], "CarrierLoc", Loc(cur.PlcIndex, i + 1), "Station", (i + 1).ToString())));
             }
-            else if (b == 0 && a != 0) // 取出（AGV 路径 1→3→0，终点 3→0；手动 1→0 直跳）
+            else if (b == 0 && a != 0) // 取出（AGV 路径 1/5→3→0，终点 3→0；手动 1/5→0 直跳）
             {
                 _suppress204.Remove(key);
                 events.Add(new PlcEvent(EventKind.CarrierRemoved, P(
-                    "CarrierID", cur.CarrierId[i], "HandoffType", "AGV", "Station", (i + 1).ToString())));
+                    "CarrierID", cur.CarrierId[i], "HandoffType", a == RegisterMap.StTaking ? "AGV" : "MANUAL", "Station", (i + 1).ToString())));
             }
         }
 

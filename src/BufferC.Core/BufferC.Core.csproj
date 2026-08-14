@@ -1,16 +1,27 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <!-- net6.0：现场服务器 CentOS 7.8（glibc 2.17），.NET 8+ 最低要求 glibc 2.23，唯一能跑的是 .NET 6 自包含 -->
+    <TargetFramework>net6.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <!-- net6 默认 C# 10，代码用了原始字符串等新特性：编译器随 SDK（10.x）走，语言版本不限 -->
+    <LangVersion>latest</LangVersion>
+    <!-- net6 包已 EOL，NuGet 审计告警无法通过升级修复（离线工业环境）；关掉避免 warnaserror 门禁误伤 -->
+    <NuGetAudit>false</NuGetAudit>
+    <!-- 故意用 EOL 的 net6（现场 glibc 2.17），压掉 SDK 的 NETSDK1138 -->
+    <CheckEolTargetFramework>false</CheckEolTargetFramework>
+    <!-- SDK 10.0.301 + net6.0 classlib 的冲突解析链路不产出拷贝项（Exe 不受影响，实测根因）；
+        从锁文件直接填充 ReferenceCopyLocalPaths 绕过 -->
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="6.0.36" />
     <PackageReference Include="NModbus" Version="3.0.83" />
-    <PackageReference Include="Secs4Net" Version="3.0.1" />
-    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5" />
+    <!-- 2.1.4：2.1.5 起原生 e_sqlite3 基线抬到 GLIBC_2.28（objdump -T 实测），CentOS 7 只有 2.1.4 及以前兼容（≤2.14）；
+         且 2.1.4 ≥ Microsoft.Data.Sqlite 6.0.36 要求的最低 2.1.2 -->
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.4" />
   </ItemGroup>
 
 </Project>

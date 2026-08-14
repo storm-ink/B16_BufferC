@@ -51,4 +51,20 @@ public class ConfigValidationTests
         cfg.WebPort = 5000;   // 与 HSMS 冲突
         Assert.Contains(BufferCConfig.Validate(cfg), e => e.Contains("冲突"));
     }
+
+    [Fact]
+    public void AgvcCmsIndexBaseTooSmall_Detected()
+    {
+        var cfg = Cfg(new PlcConfig { Index = 1, Ip = "192.168.1.10", Port = 502 });
+        cfg.Agvc.CmsIndexBase = 16;   // 必须大于站口数，否则站口位溢出到机台位
+        Assert.Contains(BufferCConfig.Validate(cfg), e => e.Contains("cmsIndexBase"));
+    }
+
+    [Fact]
+    public void AgvcBaseUrlInvalid_Detected()
+    {
+        var cfg = Cfg(new PlcConfig { Index = 1, Ip = "192.168.1.10", Port = 502 });
+        cfg.Agvc.BaseUrl = "ftp://10.0.0.1";
+        Assert.Contains(BufferCConfig.Validate(cfg), e => e.Contains("baseUrl"));
+    }
 }

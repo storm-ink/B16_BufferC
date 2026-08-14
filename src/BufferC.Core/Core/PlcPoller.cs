@@ -7,7 +7,7 @@ namespace BufferC.Core.Core;
 public interface IEventSink
 {
     void Emit(int plcIndex, IReadOnlyList<PlcEvent> events);
-    void Log(string category, string msg);
+    void Log(string category, string msg, LogLevel level = LogLevel.Info);
 }
 
 /// <summary>
@@ -33,12 +33,23 @@ public sealed class PlcPoller
         _engine = engine;
         _sink = sink;
         _client = new ModbusTcpClient(cfg.Ip, cfg.Port, cfg.UnitId, cfg.TimeoutMs);
+        // Modbus 帧级日志（trace 级，logModbusFrames 配置控制；命令通道共用同一 client，命令帧自动覆盖）
+        _client.Frame += (isTx, data) =>
+        {
+            if (_app.LogModbusFrames)
+                _sink.Log($"PLC{cfg.Index}", $"MODBUS {(isTx ? "TX" : "RX")} {Convert.ToHexString(data)}", LogLevel.Trace);
+        };
         _channel = new CommandChannel(_client, cfg, app);
     }
 
     public CommandChannel Channel => _channel;
     public PlcConfig Config => _cfg;
     public PlcSnapshot? Snapshot => _snapCopy;
+
+    // ---------- 寄存器直读写（Web「PLC 调试」面板联调用；断线抛 ModbusException/IOException） ----------
+    public ushort[] ReadRegs(int addr, int count) => _client.ReadHoldingRegisters((ushort)addr, (ushort)count);
+    public void WriteReg(int addr, ushort value) => _client.WriteSingleRegister((ushort)addr, value);
+    public void WriteRegs(int addr, ushort[] values) => _client.WriteMultipleRegisters((ushort)addr, values);
 
     // ---------- 运行统计（界面/联调用） ----------
     public bool IsConnected;

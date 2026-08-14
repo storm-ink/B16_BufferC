@@ -1,17 +1,25 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net6.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
+    <!-- 开发机/CI 只有 .NET 10 运行时：net6 测试工程滚动到已装运行时 -->
+    <RollForward>LatestMajor</RollForward>
+    <!-- 故意用 EOL 的 net6（现场 glibc 2.17），压掉 SDK 的 NETSDK1138 -->
+    <CheckEolTargetFramework>false</CheckEolTargetFramework>
+    <!-- SDK 10 + net6 classlib 拷贝链路缺陷（同 BufferC.Core），否则 xunit/sqlite 不拷入测试输出 -->
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="6.0.4" />
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <!-- 17.8.0 是官方最后支持 net6 的 Test SDK（17.12+ 的 testhost 拷贝链路在 net6 classlib 下也断裂） -->
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
     <PackageReference Include="xunit" Version="2.9.3" />
-    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <!-- 2.8.2：3.x 无 net6 资产（NU1701）；2.8 线兼容 xunit 2.9 -->
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
   </ItemGroup>
 
   <ItemGroup>

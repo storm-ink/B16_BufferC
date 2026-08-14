@@ -36,16 +36,21 @@ public sealed class HsmsServer : IDisposable
     public event Action<string, string>? Log;   // (方向, 消息)
     public event Action<string, Dictionary<string, string>>? OnHostCommand; // S2F41 (RCMD, 参数) → 业务层
 
+    /// <summary>帧日志运行时开关（联调 Web /api/debug 可切换；初始取自 config logFrames）</summary>
+    public volatile bool LogFramesEnabled;
+
     /// <summary>协议帧级日志（logFrames=false 时跳过，避免运行期刷屏）</summary>
     private void LogFrame(string category, string msg)
     {
-        if (_cfg.LogFrames) Log?.Invoke(category, msg);
+        if (!LogFramesEnabled) return;
+        Log?.Invoke(category, msg);
     }
 
     public HsmsServer(HsmsConfig cfg, IStatusProvider provider)
     {
         _cfg = cfg;
         _provider = provider;
+        LogFramesEnabled = cfg.LogFrames;
     }
 
     public bool Connected => _client?.Connected == true;
@@ -351,7 +356,7 @@ public sealed class HsmsServer : IDisposable
             {
                 _stream.Write(msg.ToBytes());
                 MessagesOut++;
-                LogFrame("→MCS", $"{msg.Name} sys={sysBytes}\n{string.Join("\n", msg.Items().Select(x => x.ToSml(1)))}");
+                LogFrame("→MCS", $"{msg.Name} sys={sysBytes} HEX={Convert.ToHexString(msg.ToBytes())}\n{string.Join("\n", msg.Items().Select(x => x.ToSml(1)))}");
                 return true;
             }
             catch (Exception e)

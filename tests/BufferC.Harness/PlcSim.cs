@@ -30,10 +30,16 @@ public sealed class PlcSim : IDisposable
 
     public int Port { get; private set; }
 
-    /// <summary>启动监听（随机端口），返回端口号</summary>
-    public int Start()
+    /// <summary>当前已连接的 Modbus 客户端数（联调预演用：等 BufferC 连入）</summary>
+    public int ClientCount { get { lock (_clients) return _clients.Count; } }
+
+    /// <summary>启动监听（随机端口，Loopback），返回端口号</summary>
+    public int Start() => Start(IPAddress.Loopback, 0);
+
+    /// <summary>启动监听（指定地址与端口）；联调预演用 Any + 固定端口，让 WSL 里的 BufferC 经网关 IP 接入</summary>
+    public int Start(IPAddress ip, int port)
     {
-        _listener = new TcpListener(IPAddress.Loopback, 0);
+        _listener = new TcpListener(ip, port);
         _listener.Start();
         Port = ((IPEndPoint)_listener.LocalEndpoint).Port;
         _cts = new CancellationTokenSource();
@@ -48,9 +54,13 @@ public sealed class PlcSim : IDisposable
         lock (_clients) foreach (var c in _clients) c.Dispose();
     }
 
+    /// <summary>注入记录（调试台可观测性）</summary>
+    private void Note(string s) => Console.WriteLine($"[PlcSim{_index}] 注入: {s}");
+
     /// <summary>断线注入：掐断所有连接（BufferC 将走重连+重同步）</summary>
     public void DropConnection()
     {
+        Note($"断连注入（{_clients.Count} 个连接）");
         lock (_clients) foreach (var c in _clients) c.Dispose();
     }
 
@@ -60,6 +70,9 @@ public sealed class PlcSim : IDisposable
     public volatile int EchoDelayMs;
     /// <summary>回显丢弃计数：前 N 次命令执行但回显丢失（模拟丢回显）</summary>
     public volatile int EchoDropCount;
+    /// <summary>写请求失败注入：第 N 次 FC06/FC16 返回异常码 0x04 且不生效（模拟命令序列中途写失败）；0=关</summary>
+    public volatile int FailOnWriteNo;
+    private long _writeCount;
 
     // ---------- 行为 API（测试驱动） ----------
     public ushort GetReg(int addr) { lock (_lock) return _regs[addr]; }
@@ -83,6 +96,7 @@ public sealed class PlcSim : IDisposable
     /// <summary>扫码器触发：写 323/324~339，置 340=1</summary>
     public void TriggerScan(int station, string code)
     {
+        Note($"扫码握手 站{station} 码=\"{code}\"（置 340=1）");
         var words = RegisterMap.PackAscii(code, _byteOrder);
         lock (_lock)
         {
@@ -158,6 +172,7 @@ public sealed class PlcSim : IDisposable
             }
             case 0x06: // 写单寄存器
             {
+                if (TryFailWrite()) return new byte[] { 0x86, 0x04 };   // DeviceFailure：不生效
                 int addr = (pdu[1] << 8) | pdu[2];
                 ushort val = (ushort)((pdu[3] << 8) | pdu[4]);
                 lock (_lock) _regs[addr] = val;
@@ -166,6 +181,7 @@ public sealed class PlcSim : IDisposable
             }
             case 0x10: // 写多寄存器
             {
+                if (TryFailWrite()) return new byte[] { 0x90, 0x04 };   // DeviceFailure：不生效
                 int addr = (pdu[1] << 8) | pdu[2];
                 int count = (pdu[3] << 8) | pdu[4];
                 lock (_lock)
@@ -179,19 +195,31 @@ public sealed class PlcSim : IDisposable
         }
     }
 
+    /// <summary>写请求失败注入：计数到 FailOnWriteNo 的那一次写返回异常码（调用方见 ModbusException），随后关闭注入</summary>
+    private bool TryFailWrite()
+    {
+        long n = Interlocked.Increment(ref _writeCount);
+        if (FailOnWriteNo == 0 || n != FailOnWriteNo) return false;
+        FailOnWriteNo = 0;
+        Note($"写请求失败注入（第 {n} 次写）");
+        return true;
+    }
+
     /// <summary>命令执行仿真：400 编号变化 → 应用 401~416 命令 → 回显 306/307~322</summary>
     private void CheckCommand()
     {
-        if (CommandHang) return;                             // 命令挂起：不回显
+        if (CommandHang) { Note("命令挂起中: 不回显"); return; }   // 命令挂起：不回显
         if (_regs[RegisterMap.RegCmdNo] == _lastExecSeq) return;
         if (EchoDropCount > 0)                               // 执行但丢弃回显
         {
             EchoDropCount--;
             _lastExecSeq = _regs[RegisterMap.RegCmdNo];
+            Note($"回显丢弃: 执行 seq={_lastExecSeq}，剩余丢弃次数 {EchoDropCount}");
             return;
         }
         _lastExecSeq = _regs[RegisterMap.RegCmdNo];
         ApplyCommand();
+        Note($"命令执行 seq={_lastExecSeq}（{(EchoDelayMs > 0 ? $"迟到回显 {EchoDelayMs}ms" : "立即回显")}）");
         if (EchoDelayMs > 0)                                 // 迟到回显：执行快、306 延迟写（与响应分离）
         {
             ushort seq = _lastExecSeq;

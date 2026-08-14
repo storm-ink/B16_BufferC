@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using BufferC.Core.Modbus;
 
 namespace BufferC.Core.Config;
 
@@ -14,6 +15,9 @@ public sealed class BufferCConfig
     public string LogFile { get; set; } = "bufferc.log";
     public string? DbPath { get; set; }                    // 库存台账 SQLite 路径（null=内存模式）
     public int WebPort { get; set; }                       // Web 界面端口（0=不启动）
+    public string LogLevel { get; set; } = "info";         // info|debug|trace（启动最小级别；联调可 /api/debug 运行时切换）
+    public bool LogModbusFrames { get; set; }              // Modbus TX/RX 帧日志（trace 级，默认关；联调开）
+    public AgvcConfig Agvc { get; set; } = new();          // AGVC HTTP 集成（baseUrl 空=出站调用禁用）
 
     public static BufferCConfig Load(string path)
     {
@@ -37,6 +41,19 @@ public sealed class BufferCConfig
         if (cfg.WebPort is < 0 or > 65535) errors.Add($"Web 端口非法: {cfg.WebPort}");
         if (cfg.WebPort > 0 && cfg.WebPort == cfg.Hsms.ListenPort)
             errors.Add($"Web 端口 {cfg.WebPort} 与 HSMS 端口 {cfg.Hsms.ListenPort} 冲突");
+        if (!new[] { "info", "debug", "trace" }.Contains(cfg.LogLevel.ToLowerInvariant()))
+            errors.Add($"logLevel 非法: {cfg.LogLevel}（允许 info/debug/trace）");
+        if (cfg.Agvc.CmsIndexBase <= RegisterMap.StationsPerPlc)
+            errors.Add($"agvc.cmsIndexBase {cfg.Agvc.CmsIndexBase} 非法（必须大于站口数 {RegisterMap.StationsPerPlc}，否则站口位溢出到机台位）");
+        if (cfg.Agvc.CmsIndexBase > 1_000_000)
+            errors.Add($"agvc.cmsIndexBase {cfg.Agvc.CmsIndexBase} 过大（上限 1000000）");
+        if (cfg.Agvc.TimeoutSec is < 1 or > 60) errors.Add($"agvc.timeoutSec {cfg.Agvc.TimeoutSec} 非法（允许 1~60）");
+        if (cfg.Agvc.RetryCount is < 0 or > 10) errors.Add($"agvc.retryCount {cfg.Agvc.RetryCount} 非法（允许 0~10）");
+        if (cfg.Agvc.ArrivalGraceMs is < 0 or > 60_000) errors.Add($"agvc.arrivalGraceMs {cfg.Agvc.ArrivalGraceMs} 非法（允许 0~60000）");
+        if (!string.IsNullOrWhiteSpace(cfg.Agvc.BaseUrl)
+            && (!Uri.TryCreate(cfg.Agvc.BaseUrl, UriKind.Absolute, out var agvcUri)
+                || agvcUri.Scheme is not ("http" or "https")))
+            errors.Add($"agvc.baseUrl 非法: {cfg.Agvc.BaseUrl}（需 http/https 绝对地址）");
         return errors;
     }
 
@@ -69,4 +86,15 @@ public sealed class HsmsConfig
     public int T3Ms { get; set; } = 45_000;
     public string SvidCarrierFormat { get; set; } = "l4";  // S1F4 SVID15 结构：l4=L,4(ID,Loc,Time,State) / l2=L,2(ID,Loc)（现场按 MCS 解析确认）
     public bool LogFrames { get; set; } = true;            // 协议帧日志（联调期开，运行期可关）
+}
+
+/// <summary>AGVC HTTP 集成（仅出站 queryMachines 取货物ID；入站接口已移除 2026-08-14）</summary>
+public sealed class AgvcConfig
+{
+    public string? BaseUrl { get; set; }                   // AGVC 服务器地址（空=出站调用禁用）
+    public int TimeoutSec { get; set; } = 5;               // 出站 HTTP 超时
+    public int RetryCount { get; set; } = 3;               // 首次失败后重试次数（总尝试 = 1+RetryCount）
+    public int RetryIntervalMs { get; set; } = 2000;       // 重试间隔
+    public int CmsIndexBase { get; set; } = 10000;         // cmsIndex = 机台号×base + 站口号（10001=1号机台1号站口）
+    public int ArrivalGraceMs { get; set; } = 3000;        // 站口 2→1 后等扫码握手(340)的窗口；0=不等待
 }

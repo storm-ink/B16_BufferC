@@ -59,8 +59,17 @@ public sealed class StressTests : IAsyncLifetime
             await Task.Delay(30);
         }
         // 风暴结束：最终状态一致（S1F3 查询 EnhancedCarriers 为空）
-        var items = await _mcs.QuerySvidAsync(15);
-        Assert.Empty(items[0].Children!);
+        // 显式等待 poller 消化最后一轮变化（教训：不赌固定 delay，同 AlarmStorm 重试模式；
+        // poller 周期 100ms，最后一轮 SetStationState 后立即查询会被并行负载下的 poller 迟到击穿；
+        // 死线 15s：全套并行（4 线程）高负载下 10s 偶发不够）
+        var deadline = Environment.TickCount64 + 15000;
+        var svid15 = (await _mcs.QuerySvidAsync(15))[0];
+        while (svid15.Children is { Count: > 0 } && Environment.TickCount64 < deadline)
+        {
+            await Task.Delay(100);
+            svid15 = (await _mcs.QuerySvidAsync(15))[0];
+        }
+        Assert.Empty(svid15.Children!);
     }
 
     [Fact]

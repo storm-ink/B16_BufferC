@@ -1,11 +1,14 @@
+using System.Diagnostics;
+using System.IO;
 using BufferC.Core.Config;
 using BufferC.Core.Modbus;
 
 namespace BufferC.Core.Core;
 
 /// <summary>
-/// 统一命令通道（开发文档 §2.4）：写ID → 写命令 → 写编号 → 回显匹配。
-/// 同 PLC 内串行化；5s 超时重试 1 次；命令编号 1~65535 自增。
+/// 统一命令通道（开发文档 §2.4）：整段清零 401~672 → 写 ID/命令 → 写 400 编号触发 → 回显匹配。
+/// 成功与否以回显匹配为唯一标准；同 PLC 内串行化；5s 超时重试；命令编号 1~65535 自增。
+/// 重试策略：区域未就位（清零/写内容中途失败）→ 完整重写；区域已就位（400 响应丢失/回显丢失）→ 只重写 400 新编号再触发。
 /// </summary>
 public sealed class CommandChannel
 {
@@ -29,32 +32,69 @@ public sealed class CommandChannel
     public long CommandCount;
     public long CommandFailCount;
 
+    /// <summary>最近 100 次命令总耗时（含重试与排队，与 CmdEntry.ElapsedMs 语义一致）</summary>
+    public readonly RingBuffer<long> LatencyRing = new(100);
+
+    public sealed record LatencyStats(long Count, long MinMs, long MaxMs, long AvgMs);
+
+    public LatencyStats GetLatencyStats()
+    {
+        var all = LatencyRing.GetTail(100);
+        if (all.Count == 0) return new LatencyStats(0, 0, 0, 0);
+        return new LatencyStats(all.Count, all.Min(), all.Max(), (long)all.Average());
+    }
+
     /// <summary>执行一条站口命令；成功返回 true</summary>
     public bool Execute(int station, ushort cmd, string? carrierId)
     {
+        var sw = Stopwatch.StartNew();
         _gate.Wait();
         try
         {
+            bool areaReady = false;   // 401~672 已写入本次内容：此后失败只重写 400 新编号触发
             for (int attempt = 0; attempt <= _app.EchoRetryCount; attempt++)
             {
                 if (attempt > 0) Console.WriteLine($"[Cmd] 站口{station} 重试 {attempt}…");
-                _seq = _seq % 65535 + 1;                      // 1~65535 回绕
-                if (cmd == RegisterMap.CmdWrite)
-                    _client.WriteMultipleRegisters((ushort)(RegisterMap.RegCmdCarrierId + (station - 1) * 16),
-                        RegisterMap.PackAscii(carrierId ?? "", _cfg.ByteOrder));
-                _client.WriteSingleRegister((ushort)(RegisterMap.RegCmdStation + station - 1), cmd);
-                _client.WriteSingleRegister(RegisterMap.RegCmdNo, (ushort)_seq);
-                if (WaitEcho((ushort)_seq, station, cmd))
+                _seq = _seq % 65535 + 1;                      // 1~65535 回绕（每次尝试新编号：PLC 靠 400 新值触发）
+                try
                 {
-                    CommandCount++;
-                    return true;
+                    if (!areaReady)
+                    {
+                        // PLC 协议（现场确认）：400 出现新值才扫描 401 以上执行。
+                        // ① 整段清零 401~672（清掉旧命令/旧 ID，防非幂等重复执行）
+                        _client.WriteMultipleRegisters((ushort)RegisterMap.RegCmdStation,
+                            new ushort[RegisterMap.RegCmdAreaWords]);
+                        // ② 写本次内容（先 ID 后命令码，若 PLC 程序盯命令寄存器沿，ID 已就位）
+                        if (cmd == RegisterMap.CmdWrite)
+                            _client.WriteMultipleRegisters((ushort)(RegisterMap.RegCmdCarrierId + (station - 1) * 16),
+                                RegisterMap.PackAscii(carrierId ?? "", _cfg.ByteOrder));
+                        _client.WriteSingleRegister((ushort)(RegisterMap.RegCmdStation + station - 1), cmd);
+                        areaReady = true;                     // 区域就位——此后失败只重写 400 新编号
+                    }
+                    // ③ 写 400（新编号）触发执行；成功与否以回显匹配为唯一标准
+                    _client.WriteSingleRegister(RegisterMap.RegCmdNo, (ushort)_seq);
+                    if (WaitEcho((ushort)_seq, station, cmd))
+                    {
+                        CommandCount++;
+                        return true;
+                    }
+                    // 回显超时（400 已发出、PLC 可能已执行）：区域仍有效，重试只重写 400 新编号再触发（命令幂等，重复执行无害）
+                }
+                catch (Exception e) when (e is ModbusException or IOException)
+                {
+                    // 传输异常：区域未就位 → 下次完整重写；已就位（失败在 400/回显阶段）→ 下次只重写 400
                 }
             }
             CommandCount++;
             CommandFailCount++;
             return false;
         }
-        finally { _gate.Release(); }
+        finally
+        {
+            _gate.Release();
+            // 亚毫秒完成（本机回环仿真）ElapsedMilliseconds 截断为 0，与"无命令"语义混淆 → 下限 1ms
+            LatencyRing.Add(Math.Max(1, sw.ElapsedMilliseconds));
+        }
     }
 
     private bool WaitEcho(ushort seq, int station, ushort cmd)

@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using BufferC.Core;
 using BufferC.Core.Config;
 using Microsoft.AspNetCore.Builder;
@@ -31,6 +32,11 @@ public static class Program
 
         var exit = new ManualResetEventSlim(false);
         Console.CancelKeyPress += (_, e) => { e.Cancel = true; exit.Set(); };
+        if (OperatingSystem.IsLinux())
+        {
+            // Linux 下 systemctl stop 发 SIGTERM：不处理则优雅关闭卡死在 exit.Wait()（实测挂 90s+ 被 SIGKILL）
+            PosixSignalRegistration.Create(PosixSignal.SIGTERM, ctx => { ctx.Cancel = true; exit.Set(); });
+        }
         Console.WriteLine("按 Ctrl+C 退出");
         exit.Wait();
         service.Stop();

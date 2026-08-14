@@ -15,9 +15,15 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net6.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <!-- 故意用 EOL 的 net6（现场 glibc 2.17），压掉 SDK 的 NETSDK1138 -->
+    <CheckEolTargetFramework>false</CheckEolTargetFramework>
+    <!-- .NET 6.0.36 runtime 包不含 ICU 本体（实测），CentOS 7 系统库又装不上（yum 已死）；
+         代码无文化敏感操作（纯数字/hex/显式时间格式），InvariantGlobalization 零副作用 -->
+    <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 
 </Project>

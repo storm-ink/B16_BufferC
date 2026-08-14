@@ -4,12 +4,16 @@ obj/
 
 # 发布产物（联调/部署包不入库，按需单独分发）
 publish/
+*.tgz
 
 # 运行数据
 *.db
 *.db-shm
 *.db-wal
 *.log
+
+# 现场配置备份（含现场 IP 等环境信息，不入库）
+wsl-field-config-backup.json
 
 # IDE
 .vs/

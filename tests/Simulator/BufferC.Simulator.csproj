@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <!-- 联调预演在 Windows 侧跑：本机只有 .NET 10 运行时，滚动运行 -->
+    <RollForward>LatestMajor</RollForward>
+    <CheckEolTargetFramework>false</CheckEolTargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\BufferC.Core\BufferC.Core.csproj" />
+    <ProjectReference Include="..\BufferC.Harness\BufferC.Harness.csproj" />
+  </ItemGroup>
+
+</Project>
