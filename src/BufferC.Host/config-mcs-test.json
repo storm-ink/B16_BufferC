@@ -1,0 +1,16 @@
+{
+  "plcs": [
+    { "index": 1, "ip": "127.0.0.1", "port": 5501, "unitId": 1, "byteOrder": "high", "timeoutMs": 3000, "lastSeq": 0 }
+  ],
+  "hsms": { "listenPort": 5000, "mdln": "BUFFERC", "softRev": "0.1.0", "t3Ms": 45000, "unitLimit": 4 },
+  "agvc": { "baseUrl": "", "timeoutSec": 5, "retryCount": 3, "retryIntervalMs": 2000, "cmsIndexBase": 10000, "arrivalGraceMs": 3000 },
+  "pollIntervalMs": 500,
+  "echoTimeoutMs": 5000,
+  "echoRetryCount": 1,
+  "logFile": "bufferc.log",
+  "logLevel": "debug",
+  "logRetentionDays": 7,
+  "auditFile": "bufferc.audit.log",
+  "dbPath": "bufferc-mcs2.db",
+  "webPort": 7001
+}

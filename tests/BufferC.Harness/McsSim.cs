@@ -12,8 +12,8 @@ public sealed class McsSim : IDisposable
 {
     private TcpClient? _tcp;
     private NetworkStream? _stream;
-    private ushort _sysBytes = 1000;
-    private readonly ConcurrentDictionary<ushort, TaskCompletionSource<HsmsMessage>> _pending = new();
+    private uint _sysBytes = 1000;
+    private readonly ConcurrentDictionary<uint, TaskCompletionSource<HsmsMessage>> _pending = new();
     private readonly ConcurrentQueue<HsmsMessage> _received = new();
     private CancellationTokenSource _cts = new();
 
@@ -54,7 +54,7 @@ public sealed class McsSim : IDisposable
     /// <summary>发送主消息并等待回复</summary>
     public async Task<HsmsMessage?> PrimaryAsync(byte stream, byte func, byte[] body, int timeoutMs = 5000)
     {
-        ushort sys = _sysBytes++;
+        uint sys = _sysBytes++;
         var tcs = new TaskCompletionSource<HsmsMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
         _pending[sys] = tcs;
         var msg = new HsmsMessage { Stream = stream, Function = func, WBit = true, SystemBytes = sys, Body = body };
@@ -179,7 +179,7 @@ public sealed class McsSim : IDisposable
         catch { /* 断连 */ }
     }
 
-    private void SendRaw(byte stream, byte func, bool wbit, byte[] body, ushort sysBytes)
+    private void SendRaw(byte stream, byte func, bool wbit, byte[] body, uint sysBytes)
     {
         try
         {

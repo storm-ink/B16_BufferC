@@ -30,7 +30,7 @@ public sealed class ScenarioTests : IAsyncLifetime
         var cfg = new BufferCConfig
         {
             Plcs = { new PlcConfig { Index = 1, Ip = "127.0.0.1", Port = plcPort, UnitId = 1, ByteOrder = "high" } },
-            Hsms = new HsmsConfig { ListenPort = 5000 },
+            Hsms = new HsmsConfig { ListenPort = 5100 },   // 与现场 MCS 的 5000 隔离（MCS 重连会撞进测试夹具顶掉连接）
             PollIntervalMs = 100,
             LogFile = "test-bufferc.log",
         };
@@ -38,7 +38,7 @@ public sealed class ScenarioTests : IAsyncLifetime
         _svc.Start();
 
         _mcs = new McsSim();
-        _mcs.Connect("127.0.0.1", 5000);
+        _mcs.Connect("127.0.0.1", 5100);
         await _mcs.EstablishAsync();
         // 等基线轮询就绪（CI 负载下固定 delay 不可靠）
         var deadline = Environment.TickCount64 + 15000;
@@ -59,7 +59,7 @@ public sealed class ScenarioTests : IAsyncLifetime
         var items = await _mcs.QuerySvidAsync(14, 21, 15, 29, 3);
         Assert.Equal(5, items.Count);
         Assert.Equal((uint)5, items[0].AsUInt());    // ControlState = ONLINE REMOTE
-        Assert.Equal((uint)3, items[1].AsUInt());    // SCState = AUTO
+        Assert.Equal((uint)2, items[1].AsUInt());    // SCState = PAUSED（MCS 现场要求）
         Assert.Equal(SecsFormat.L, items[2].Format); // EnhancedCarriers（L）
         Assert.Equal(SecsFormat.L, items[4].Format); // AlarmSet（L）
     }
@@ -76,7 +76,7 @@ public sealed class ScenarioTests : IAsyncLifetime
         var l = ev!.Items()[0].Children!;                     // S6F11 = L3[...]
         var rpt = l[2].Children![0].Children![1];             // L1[L2[U2 rptid, RPT body]]
         Assert.Equal("CARRIER001", rpt.Children![0].AsString());
-        Assert.Equal("Buffer1_Port3", rpt.Children![1].AsString());
+        Assert.Equal("BUFFER01_03", rpt.Children![1].AsString());
     }
 
     [Fact]
@@ -93,10 +93,23 @@ public sealed class ScenarioTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Scenario04_S2F41_Pause_Rejected_HCACK2()
+    public async Task Scenario04_S2F41_Pause_Accepted_HCACK0()
     {
+        // OFFLINE→ONLINE 流程内 MCS 会发 PAUSE/RESUME：回 HCACK=0 确认接受（现场 2026-08-15）
         var hcack = await _mcs.SendS2F41Async("PAUSE");
-        Assert.Equal(2, hcack);                      // MCS 已确认不发；异常收到拒收
+        Assert.Equal(0, hcack);
+    }
+
+    [Fact]
+    public async Task Scenario04b_S2F41_Resume_Raises103()
+    {
+        // RESUME 应答后发 SCAutoCompleted(103)；SCState 固定 2 不翻转（MCS 不发 PAUSE，现场约定）
+        var hcack = await _mcs.SendS2F41Async("RESUME");
+        Assert.Equal(0, hcack);
+        var ev = await _mcs.WaitForEventAsync(103);
+        Assert.NotNull(ev);
+        var items = await _mcs.QuerySvidAsync(21);
+        Assert.Equal(2u, items[0].AsUInt());
     }
 
     [Fact]
@@ -157,14 +170,15 @@ public sealed class ScenarioTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Scenario09_OnlineRemote_CEID3()
+    public async Task Scenario09_Online_NoCEID3()
     {
+        // 现场流程：S1F17 只回 ONLACK，不发 CEID 3（状态事件由 RESUME 后的 CEID 103 承担）
         var r18 = await _mcs.PrimaryAsync(1, 17, Array.Empty<byte>());   // S1F17 Request ON-LINE
         Assert.NotNull(r18);
         Assert.Equal(18, r18!.Function);                                 // S1F18
         Assert.Equal((uint)0, r18.Items()[0].AsUInt());                  // ONLACK=0
-        var ev = await _mcs.WaitForEventAsync(3);                        // OnlineRemote(3)
-        Assert.NotNull(ev);
+        var ev = await _mcs.WaitForEventAsync(3, 1000);
+        Assert.Null(ev);                                                 // 不再发 CEID 3
     }
 
     [Fact]
@@ -192,7 +206,7 @@ public sealed class ScenarioTests : IAsyncLifetime
         Assert.NotNull(e301);
         var l = e302!.Items()[0].Children!;
         var rpt = l[2].Children![0].Children![1];                        // RPT3: A UnitID
-        Assert.Equal("Buffer1_AI01", rpt.Children![0].AsString());
+        Assert.Equal("BUFFER01_01", rpt.Children![0].AsString());   // 单位 ID 命名（MCS 现场规则）
     }
 
     [Fact]
@@ -231,15 +245,153 @@ public sealed class ScenarioTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Scenario14_InventoryDataSend_Defensive()
+    public async Task Scenario14_InventoryDataSend_Reconcile()
     {
-        // 已裁剪（2026-08-04）：异常收到时记录并忽略，回 HCACK=4，不产生事件
+        // 1.2.6：InventoryDataSend 对账——以 MCS 列表更新台账，回 HCACK=4，不产生事件
         var hcack = await _mcs.SendS2F41Async("InventoryDataSend",
             ("CARRIERID", "INV001"), ("CARRIERLOC", "Buffer1_Port1"));
         Assert.Equal(4, hcack);
         var ev = await _mcs.WaitForEventAsync(201, 1000);
         Assert.Null(ev);
+        Assert.Contains(_svc.Carriers, c => c.CarrierId == "INV001" && c.CarrierLoc == "BUFFER01_01");
     }
+
+    [Fact]
+    public async Task Scenario14b_InventoryUpdateRequest_CEID502()
+    {
+        // 1.2.6 第一步：手动触发 InventoryUpdateRequest（CEID 502），MCS 侧收到事件
+        var sent = _svc.TriggerInventoryUpdateRequest();
+        Assert.True(sent);
+        var ev = await _mcs.WaitForEventAsync(502);
+        Assert.NotNull(ev);
+    }
+
+    [Fact]
+    public async Task Scenario14c_Sources_RecordedPerPath()
+    {
+        // 来源映射：204→AGV、扫码 201→MANUAL、S2F41 命令→MCS（站口主表 InstallSource）
+        _plc.SetCarrierId(7, "SRC001");
+        _plc.SetStationState(7, 2);
+        await Task.Delay(300);
+        _plc.SetStationState(7, 1);
+        Assert.NotNull(await _mcs.WaitForEventAsync(204));
+        Assert.Contains(_svc.Ledger, r => r.Station == 7 && r.CarrierId == "SRC001" && r.InstallSource == "AGV");
+
+        _plc.TriggerScan(8, "SCAN001");                     // 扫码 → 501 + 201（手动）
+        Assert.NotNull(await _mcs.WaitForEventAsync(501));
+        Assert.NotNull(await _mcs.WaitForEventAsync(201));
+        Assert.Contains(_svc.Ledger, r => r.Station == 8 && r.CarrierId == "SCAN001" && r.InstallSource == "MANUAL");
+
+        var hcack = await _mcs.SendS2F41Async("CarrierDataInstall",
+            ("CARRIERID", "SRC003"), ("CARRIERLOC", "BUFFER01_09"));
+        Assert.Equal(4, hcack);
+        Assert.NotNull(await _mcs.WaitForEventAsync(201));
+        Assert.Contains(_svc.Ledger, r => r.Station == 9 && r.CarrierId == "SRC003" && r.InstallSource == "MCS");
+    }
+
+    [Fact]
+    public async Task Scenario14d_Remove_RetainsLedgerRow()
+    {
+        // 取走保留历史：Carriers 不含、Ledger 含 state=0 + 载具 ID + 来源 + 更新时间；再安装覆盖
+        var hcack = await _mcs.SendS2F41Async("CarrierDataInstall",
+            ("CARRIERID", "SRC004"), ("CARRIERLOC", "BUFFER01_10"));
+        Assert.Equal(4, hcack);
+        Assert.NotNull(await _mcs.WaitForEventAsync(201));
+        Assert.Contains(_svc.Carriers, c => c.CarrierId == "SRC004");
+
+        var removed = _svc.ManualRemove("SRC004", "MANUAL");
+        Assert.True(removed);
+        // 异步执行：轮询等待取走完成（后台工作线程 200ms 周期）
+        var deadline = Environment.TickCount64 + 8000;
+        while (Environment.TickCount64 < deadline && _svc.Ledger.Single(r => r.Station == 10).State != RegisterMap.StEmpty)
+            await Task.Delay(100);
+        Assert.DoesNotContain(_svc.Carriers, c => c.CarrierId == "SRC004");
+        var row = _svc.Ledger.Single(r => r.Station == 10);
+        Assert.Equal(RegisterMap.StEmpty, row.State);
+        Assert.Equal("SRC004", row.CarrierId);
+        Assert.Equal("MCS", row.InstallSource);
+        Assert.NotEqual("", row.UpdatedAt);
+
+        // 再安装同站：历史覆盖为最新一条（异步，等执行完成）
+        Assert.True(_svc.ManualInstall("SRC005", "BUFFER01_10", "MANUAL"));
+        deadline = Environment.TickCount64 + 8000;
+        while (Environment.TickCount64 < deadline && _svc.Ledger.Single(r => r.Station == 10).CarrierId != "SRC005")
+            await Task.Delay(100);
+        var row2 = _svc.Ledger.Single(r => r.Station == 10);
+        Assert.Equal("SRC005", row2.CarrierId);
+        Assert.Equal("MANUAL", row2.InstallSource);
+        Assert.Equal(RegisterMap.StHasCarrier, row2.State);
+    }
+
+    [Fact]
+    public async Task Scenario14e_WebApi_Inventory_MergedRows()
+    {
+        // /api/inventory 站口合并表：满 16 行、中文标签、安装/取走流转（来源/更新时间/离开保留）
+        var cfg = new BufferCConfig
+        {
+            Plcs = { new PlcConfig { Index = 1, Ip = "127.0.0.1", Port = _plc.Port, UnitId = 1, ByteOrder = "high" } },
+            Hsms = new HsmsConfig { ListenPort = 5103 },        // 独立端口避让并行测试
+            PollIntervalMs = 100,
+            WebPort = 5042,
+            LogFile = "test-bufferc.log",
+        };
+        var svc = new BufferCService(cfg);
+        svc.Start();
+        var web = BufferC.Host.WebUi.Start(svc, 5042);
+        try
+        {
+            using var http = new HttpClient { BaseAddress = new Uri("http://127.0.0.1:5042") };
+            var ready = Environment.TickCount64 + 15000;
+            while (!svc.AllPlcsReady && Environment.TickCount64 < ready) await Task.Delay(100);
+
+            var j = await http.GetFromJsonAsync<InvResp>("/api/inventory");
+            Assert.NotNull(j);
+            Assert.Equal(16, j!.Stations.Count);
+            var st1 = j.Stations.Single(x => x.Station == 1);
+            Assert.Equal("BUFFER01", st1.DeviceNo);
+            Assert.Equal("BUFFER01_01", st1.UnitId);
+            Assert.Equal("", st1.CarrierId);
+            Assert.Equal("空", st1.StateLabel);
+
+            var ok = await http.PostAsJsonAsync("/api/command", new { cmd = "install", carrierId = "TESTID1", carrierLoc = "BUFFER01_01" });
+            Assert.True(ok.IsSuccessStatusCode);
+            var deadline = Environment.TickCount64 + 8000;
+            while (Environment.TickCount64 < deadline)
+            {
+                j = await http.GetFromJsonAsync<InvResp>("/api/inventory");
+                st1 = j!.Stations.Single(x => x.Station == 1);
+                if (st1.CarrierId == "TESTID1") break;
+                await Task.Delay(200);
+            }
+            Assert.Equal("TESTID1", st1.CarrierId);
+            Assert.Equal("MANUAL", st1.InstallSource);
+            Assert.NotEqual("", st1.UpdatedAt);
+
+            ok = await http.PostAsJsonAsync("/api/command", new { cmd = "remove", carrierId = "TESTID1" });
+            Assert.True(ok.IsSuccessStatusCode);
+            deadline = Environment.TickCount64 + 8000;          // 异步执行：轮询等取走完成
+            while (Environment.TickCount64 < deadline)
+            {
+                j = await http.GetFromJsonAsync<InvResp>("/api/inventory");
+                st1 = j!.Stations.Single(x => x.Station == 1);
+                if (st1.StationState == 0) break;
+                await Task.Delay(200);
+            }
+            Assert.Equal("TESTID1", st1.CarrierId);             // 离开行保留 ID
+            Assert.Equal(0, st1.StationState);
+        }
+        finally
+        {
+            await web.StopAsync();
+            svc.Dispose();
+        }
+    }
+
+    private sealed record InvResp(List<InvStation> Stations);
+    private sealed record InvStation(int PlcIndex, int Station, string DeviceNo, string UnitId,
+        int StationState, string StateLabel, int Avail, string UnitStateLabel,
+        int AlarmCode, string CarrierId, string InstallSource, string UpdatedAt,
+        int CmdState, string CmdStateLabel, string CmdSource);
 
     [Fact]
     public async Task Scenario15_HsmsDisconnect_Recover()
@@ -247,7 +399,7 @@ public sealed class ScenarioTests : IAsyncLifetime
         _mcs.Dispose();                                                  // HSMS 断开
         await Task.Delay(500);                                           // 服务端检测断开
         var mcs2 = new McsSim();
-        mcs2.Connect("127.0.0.1", 5000);
+        mcs2.Connect("127.0.0.1", 5100);
         await mcs2.EstablishAsync();
         _plc.SetStationState(1, 2);
         await Task.Delay(200);
@@ -271,7 +423,7 @@ public sealed class ScenarioTests : IAsyncLifetime
         var cfg = new BufferCConfig
         {
             Plcs = { new PlcConfig { Index = 1, Ip = "127.0.0.1", Port = _plc.Port, UnitId = 1, ByteOrder = "high" } },
-            Hsms = new HsmsConfig { ListenPort = 5000 },
+            Hsms = new HsmsConfig { ListenPort = 5100 },   // 与现场 MCS 的 5000 隔离（MCS 重连会撞进测试夹具顶掉连接）
             PollIntervalMs = 100,
             LogFile = "test-bufferc.log",
         };
@@ -280,7 +432,7 @@ public sealed class ScenarioTests : IAsyncLifetime
         try
         {
             var mcs2 = new McsSim();
-            mcs2.Connect("127.0.0.1", 5000);
+            mcs2.Connect("127.0.0.1", 5100);
             await mcs2.EstablishAsync();
             var ready = Environment.TickCount64 + 15000;                 // 等轮询基线就绪
             while (!svc2.AllPlcsReady && Environment.TickCount64 < ready) await Task.Delay(100);
@@ -425,7 +577,7 @@ public sealed class ScenarioTests : IAsyncLifetime
 
             // 状态视图包含 PLC 与 16 站口
             var status = await http.GetStringAsync("/api/status");
-            Assert.Contains("Buffer1_Port1", status);
+            Assert.Contains("BUFFER01_01", status);
             Assert.Contains("hsmsConnected", status);
 
             // 手动命令（Web → 命令路径 → 201 事件）
@@ -482,12 +634,18 @@ public sealed class ScenarioTests : IAsyncLifetime
             Assert.NotNull(await mcs.WaitForEventAsync(201));
             Assert.Equal("AGV001", _plc.GetCarrierId(9));
 
-            // 命令失败 → 悬空记录（C1）出现在 /api/commands，来源 MANUAL
+            // 命令失败 → 悬空记录（C1）出现在 /api/commands，来源 MANUAL（异步执行：回显挂起 → 超时+重试约 10s）
             _plc.CommandHang = true;
             await http.PostAsJsonAsync("/api/command",
                 new { cmd = "install", carrierId = "AGV002", carrierLoc = "Buffer1_Port10" });
-            await Task.Delay(1500);                          // 等超时+重试失败
-            var cmds = await http.GetStringAsync("/api/commands");
+            var cmdDeadline = Environment.TickCount64 + 15000;
+            string cmds = "";
+            while (Environment.TickCount64 < cmdDeadline)
+            {
+                cmds = await http.GetStringAsync("/api/commands");
+                if (cmds.Contains("AGV002")) break;
+                await Task.Delay(300);
+            }
             Assert.Contains("AGV002", cmds);
             Assert.Contains("MANUAL", cmds);
             _plc.CommandHang = false;
@@ -627,7 +785,7 @@ public sealed class ScenarioTests : IAsyncLifetime
     [Fact]
     public async Task Scenario28_DebugApi_ToggleFrames()
     {
-        // 帧日志运行时切换（A4）：/api/debug/logframes 关 → 无新帧日志；开 → 恢复
+        // 帧日志运行时切换（A4）：关 → 无全帧日志（HEX= 标记），审计摘要仍可见（含 S1F3）；开 → 全帧 HEX 恢复
         var cfg = new BufferCConfig
         {
             Plcs = { new PlcConfig { Index = 1, Ip = "127.0.0.1", Port = _plc.Port, UnitId = 1, ByteOrder = "high" } },
@@ -642,20 +800,23 @@ public sealed class ScenarioTests : IAsyncLifetime
         try
         {
             using var http = new HttpClient { BaseAddress = new Uri("http://127.0.0.1:5013") };
+            // 先关帧日志再建连：建连/建立阶段全程无全帧日志（窗口内无残留 HEX=），审计摘要不受开关约束
+            var r0 = await http.PostAsJsonAsync("/api/debug/logframes", new { enabled = false });
+            Assert.True(r0.IsSuccessStatusCode);
             var mcs = new McsSim();
             mcs.Connect("127.0.0.1", 5016);
             await mcs.EstablishAsync();
 
-            // 关帧日志 → 发 S1F3 → 窗口内无新 S1F3 帧（建连帧 S1F13/1/17 不含 "S1F3" 字样）
-            var r = await http.PostAsJsonAsync("/api/debug/logframes", new { enabled = false });
-            Assert.True(r.IsSuccessStatusCode);
+            // 关帧日志 → 发 S1F3 → 窗口内无全帧日志（无 HEX=）；审计摘要仍含 S1F3
             await mcs.QuerySvidAsync(14);
             await Task.Delay(500);
             var logs = await http.GetStringAsync("/api/logs?tail=200&category=MCS");
-            Assert.DoesNotContain("S1F3", logs);
+            Assert.DoesNotContain("HEX=", logs);
+            Assert.Contains("S1F3", logs);
 
-            // 开帧日志 → 发 S1F3 → 帧日志恢复
-            await http.PostAsJsonAsync("/api/debug/logframes", new { enabled = true });
+            // 开帧日志 → 发 S1F3 → 全帧日志（HEX=）恢复
+            var r = await http.PostAsJsonAsync("/api/debug/logframes", new { enabled = true });
+            Assert.True(r.IsSuccessStatusCode);
             await mcs.QuerySvidAsync(14);
             var deadline = Environment.TickCount64 + 10000;
             var seen = false;
@@ -663,9 +824,9 @@ public sealed class ScenarioTests : IAsyncLifetime
             {
                 await Task.Delay(300);
                 logs = await http.GetStringAsync("/api/logs?tail=200&category=MCS");
-                seen = logs.Contains("S1F3");
+                seen = logs.Contains("HEX=");
             }
-            Assert.True(seen, "开帧日志后应出现 S1F3 帧日志");
+            Assert.True(seen, "开帧日志后应出现全帧 HEX 日志");
             mcs.Dispose();
         }
         finally
@@ -745,8 +906,9 @@ public sealed class ScenarioTests : IAsyncLifetime
             var hc = await mcs.SendS2F41Async("CarrierDataInstall", ("CARRIERID", "DOWN001"), ("CARRIERLOC", "Buffer1_Port6"));
             Assert.Equal((byte)4, hc);                   // HCACK=4 异步执行确认（设计行为）
 
-            // 命令失败 → S5F1 告警 9001；且 HSMS 连接保持可用（后续查询成功 = 连接未崩）
-            Assert.NotNull(await mcs.WaitForEventAsync(0, 5000));   // 任意 S5F1（9001）
+            // 异步命令：断线保持待执行，重连后自动执行成功 → 201；HSMS 连接全程可用（查询成功 = 未崩）
+            Assert.NotNull(await mcs.WaitForEventAsync(201, 10000));
+            Assert.Equal("DOWN001", _plc.GetCarrierId(6));
             var items = await mcs.QuerySvidAsync(14);
             Assert.Single(items);
             mcs.Dispose();
@@ -803,10 +965,13 @@ public sealed class ScenarioTests : IAsyncLifetime
             Assert.True(r3.IsSuccessStatusCode);
             Assert.Equal((ushort)9, _plc.GetEchoStation(6));
 
-            // 手动命令位置格式放宽：取前两个数字（"1号Buffer_6号站口" == Buffer1_Port6）
+            // 手动命令位置格式放宽：取前两个数字（"1号Buffer_6号站口" == Buffer1_Port6）；异步执行轮询等待
             var r4 = await http.PostAsJsonAsync("/api/command",
                 new { cmd = "install", carrierId = "LOOSE1", carrierLoc = "1号Buffer_6号站口" });
             Assert.True(r4.IsSuccessStatusCode);
+            var looseDeadline = Environment.TickCount64 + 8000;
+            while (Environment.TickCount64 < looseDeadline && _plc.GetCarrierId(6) != "LOOSE1")
+                await Task.Delay(200);
             Assert.Equal("LOOSE1", _plc.GetCarrierId(6));
 
             // 直写寄存器（FC16）→ API 回读一致
@@ -888,7 +1053,7 @@ public sealed class ScenarioTests : IAsyncLifetime
             while (plc.GetCarrierId(1) == "" && Environment.TickCount64 < deadline2) await Task.Delay(50);
             Assert.Equal("AGV001", plc.GetCarrierId(1));
             Assert.NotNull(await mcs.WaitForEventAsync(201));
-            Assert.Contains(svc.Carriers, c => c.CarrierLoc == "Buffer1_Port1" && c.CarrierId == "AGV001");
+            Assert.Contains(svc.Carriers, c => c.CarrierLoc == "BUFFER01_01" && c.CarrierId == "AGV001");
 
             // 变化即推：201（带 ID）触发 pushDeviceStatusInfo，trayId 为刚写入的货物 ID
             var deadline3 = Environment.TickCount64 + 10000;
@@ -939,7 +1104,7 @@ public sealed class ScenarioTests : IAsyncLifetime
             while (plc.GetCarrierId(1) == "" && Environment.TickCount64 < deadline) await Task.Delay(50);
             Assert.Equal("SCANWIN1", plc.GetCarrierId(1));
             await Task.Delay(1500);                              // 越过窗口期
-            Assert.Empty(agvc.Requests.Where(r => r.Path == "/api/hsmsRpc/queryMachines"));  // 扫码路径接管，未查询（204/501 的状态推送仍会发生）
+            Assert.DoesNotContain(agvc.Requests, r => r.Path == "/api/hsmsRpc/queryMachines");  // 扫码路径接管，未查询（204/501 的状态推送仍会发生）
 
             // 变体B：无握手的站口 → 窗口到期后出站查询 queryMachines
             plc.SetStationState(2, 2);
@@ -1085,8 +1250,8 @@ public sealed class ScenarioTests : IAsyncLifetime
             Assert.NotNull(e201);
             var rpt = e201!.Items()[0].Children![2].Children![0].Children![1];
             Assert.Equal("", rpt.Children![0].AsString());                       // CarrierID 空
-            Assert.Equal("Buffer1_Port1", rpt.Children![1].AsString());
-            Assert.Contains(svc.Carriers, c => c.CarrierLoc == "Buffer1_Port1");
+            Assert.Equal("BUFFER01_01", rpt.Children![1].AsString());
+            Assert.Contains(svc.Carriers, c => c.CarrierLoc == "BUFFER01_01");
 
             // 2) 扫码补 ID：501 + 201（带 ID）→ PLC 已写入
             plc.TriggerScan(1, "MAN5001");
@@ -1193,8 +1358,9 @@ public sealed class ScenarioTests : IAsyncLifetime
                 using var d = JsonDocument.Parse(p.Body);
                 var st = d.RootElement.GetProperty("status")[0];
                 Assert.Equal("10001", st.GetProperty("cmsIndex").GetString());
-                Assert.Equal("0", st.GetProperty("inputRequest").GetString());   // 恒 0
-                Assert.Equal("0", st.GetProperty("outputRequest").GetString());
+                // 现场确认：inputRequest/outputRequest 字段已从推送体移除
+                Assert.False(st.TryGetProperty("inputRequest", out _));
+                Assert.False(st.TryGetProperty("outputRequest", out _));
             }
             mcs.Dispose();
         }
@@ -1203,6 +1369,124 @@ public sealed class ScenarioTests : IAsyncLifetime
             await web.StopAsync();
             svc.Dispose();
         }
+    }
+
+    [Fact]
+    public async Task Scenario39_AgvcTraffic_Endpoint()
+    {
+        // 联调测试台后端：AGVC 出站交互记录（queryMachines / pushDeviceStatusInfo）经 /api/agvc/traffic 可查
+        using var plc = new PlcSim(index: 1);
+        int plcPort = plc.Start();
+        using var agvc = new FakeAgvcServer { QueryCarrierId = "AGV001" };
+        var cfg = new BufferCConfig
+        {
+            Plcs = { new PlcConfig { Index = 1, Ip = "127.0.0.1", Port = plcPort, UnitId = 1, ByteOrder = "high" } },
+            Hsms = new HsmsConfig { ListenPort = 5036 },
+            PollIntervalMs = 100,
+            WebPort = 5037,
+            Agvc = AgvcCfg($"http://127.0.0.1:{agvc.Port}"),
+            LogFile = "test-bufferc.log",
+        };
+        var svc = new BufferCService(cfg);
+        svc.Start();
+        var web = BufferC.Host.WebUi.Start(svc, 5037);
+        try
+        {
+            using var http = new HttpClient { BaseAddress = new Uri("http://127.0.0.1:5037") };
+            var ready = Environment.TickCount64 + 15000;
+            while (!svc.AllPlcsReady && Environment.TickCount64 < ready) await Task.Delay(100);
+
+            plc.SetStationState(1, 2);
+            await Task.Delay(300);
+            plc.SetStationState(1, 1);
+            var deadline = Environment.TickCount64 + 10000;
+            while (plc.GetCarrierId(1) == "" && Environment.TickCount64 < deadline) await Task.Delay(50);
+            Assert.Equal("AGV001", plc.GetCarrierId(1));
+
+            var d = await http.GetStringAsync("/api/agvc/traffic");
+            // 断言含 queryMachines 成功记录（响应带 carrierId）与 pushDeviceStatusInfo 记录
+            Assert.Contains("queryMachines", d);
+            Assert.Contains("pushDeviceStatusInfo", d);
+            Assert.Contains("AGV001", d);
+        }
+        finally
+        {
+            await web.StopAsync();
+            svc.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task Scenario40_AgvcManualTriggers()
+    {
+        // AGVC 联调页手动触发：queryMachines（查 ID→写 PLC）/ pushDeviceStatusInfo（字段留空按实况推导）
+        // 手动调用与自动调用同入 traffic 记录
+        using var plc = new PlcSim(index: 1);
+        int plcPort = plc.Start();
+        using var agvc = new FakeAgvcServer { QueryCarrierId = "AGV001" };
+        var cfg = new BufferCConfig
+        {
+            Plcs = { new PlcConfig { Index = 1, Ip = "127.0.0.1", Port = plcPort, UnitId = 1, ByteOrder = "high" } },
+            Hsms = new HsmsConfig { ListenPort = 5038 },
+            PollIntervalMs = 100,
+            WebPort = 5039,
+            Agvc = AgvcCfg($"http://127.0.0.1:{agvc.Port}"),
+            LogFile = "test-bufferc.log",
+        };
+        var svc = new BufferCService(cfg);
+        svc.Start();
+        var web = BufferC.Host.WebUi.Start(svc, 5039);
+        try
+        {
+            using var http = new HttpClient { BaseAddress = new Uri("http://127.0.0.1:5039") };
+            var ready = Environment.TickCount64 + 15000;
+            while (!svc.AllPlcsReady && Environment.TickCount64 < ready) await Task.Delay(100);
+
+            // 手动 queryMachines → 应答 AGV001 → 写 PLC + 台账
+            var r1 = await http.PostAsJsonAsync("/api/agvc/manual/queryMachines", new { cmsIndex = "10001" });
+            Assert.True(r1.IsSuccessStatusCode);
+            Assert.Contains("\"ok\":true", await r1.Content.ReadAsStringAsync());
+            var deadline = Environment.TickCount64 + 10000;
+            while (plc.GetCarrierId(1) == "" && Environment.TickCount64 < deadline) await Task.Delay(50);
+            Assert.Equal("AGV001", plc.GetCarrierId(1));
+            Assert.Contains(svc.Carriers, c => c.CarrierLoc == "BUFFER01_01" && c.CarrierId == "AGV001");
+
+            // 手动 pushDeviceStatusInfo（字段留空按实况推导：service=34~49 原始值 0、present=有货 1）
+            var r2 = await http.PostAsJsonAsync("/api/agvc/manual/pushDeviceStatusInfo", new { cmsIndex = "10001" });
+            Assert.True(r2.IsSuccessStatusCode);
+            Assert.Contains("\"ok\":true", await r2.Content.ReadAsStringAsync());
+
+            // 非法 cmsIndex → ok=false
+            var r3 = await http.PostAsJsonAsync("/api/agvc/manual/queryMachines", new { cmsIndex = "abc" });
+            Assert.Contains("\"ok\":false", await r3.Content.ReadAsStringAsync());
+
+            // traffic 记录含两条手动调用
+            var d = await http.GetStringAsync("/api/agvc/traffic");
+            Assert.Contains("queryMachines", d);
+            Assert.Contains("pushDeviceStatusInfo", d);
+        }
+        finally
+        {
+            await web.StopAsync();
+            svc.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task Scenario41_HsmsTraffic_Recorded()
+    {
+        // MCS 联调页收发记录：fixture 建连（S1F13→S1F14、S1F1→S1F2、S1F17→S1F18）应全部入队，收/发方向正确
+        var tr = _svc.GetHsmsTraffic(100);
+        Assert.Contains(tr, t => t.Direction == "收" && t.Name == "S1F13W");
+        Assert.Contains(tr, t => t.Direction == "发" && t.Name == "S1F14");
+        Assert.Contains(tr, t => t.Direction == "发" && t.Name == "S1F18");
+        // HEX 原文每条都有；SML 数据树在带正文的消息上非空（S1F17 无正文为头仅消息，SML 允许空）
+        Assert.All(tr, t => Assert.True(t.Hex.Length > 0));
+        Assert.Contains(tr, t => t.Name == "S1F14" && t.Sml.Length > 0);
+        // S1F14 应带 L[2][COMMACK, L[2][MDLN, SOFTREV]]（Message Spec E→H；现场 MCS 要求）
+        var s1f14 = tr.First(t => t.Name == "S1F14");
+        Assert.Contains("BUFFERC", s1f14.Sml);
+        Assert.Contains("0.1.0", s1f14.Sml);
     }
 
     /// <summary>

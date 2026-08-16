@@ -3,10 +3,11 @@ using BufferC.Core.Modbus;
 
 namespace BufferC.Core.Core;
 
-/// <summary>事件出口（由 BufferCService 实现：路由到 HSMS + 日志）</summary>
+/// <summary>事件出口（由 BufferCService 实现：路由到 HSMS + 日志 + 表同步）</summary>
 public interface IEventSink
 {
     void Emit(int plcIndex, IReadOnlyList<PlcEvent> events);
+    void SyncSnapshot(PlcSnapshot snap);   // 每轮轮询后落表（站口主表：状态/告警/可用/ID 兜底）
     void Log(string category, string msg, LogLevel level = LogLevel.Info);
 }
 
@@ -39,7 +40,7 @@ public sealed class PlcPoller
             if (_app.LogModbusFrames)
                 _sink.Log($"PLC{cfg.Index}", $"MODBUS {(isTx ? "TX" : "RX")} {Convert.ToHexString(data)}", LogLevel.Trace);
         };
-        _channel = new CommandChannel(_client, cfg, app);
+        _channel = new CommandChannel(_client, cfg, app, _sink.Log);   // 命令全生命周期日志收编入统一管道（category=Cmd）
     }
 
     public CommandChannel Channel => _channel;
@@ -58,6 +59,8 @@ public sealed class PlcPoller
     public long ErrorCount;
     public long ReconnectCount;
     public string LastError = "";
+    private string? _lastFailMsg;      // 断线节流：同 streak 首条 ERROR、重复异常降 Debug
+    private int _failStreak;
 
     public sealed record PlcStats(bool Connected, DateTime LastPollAt, long PollCount, long ErrorCount,
         long ReconnectCount, string LastError, long CommandCount, long CommandFailCount);
@@ -82,7 +85,9 @@ public sealed class PlcPoller
                 _client.Connect();
                 IsConnected = true;
                 ReconnectCount++;
-                _sink.Log($"PLC{_cfg.Index}", $"已连接 {_cfg.Ip}:{_cfg.Port}");
+                _failStreak = 0;
+                _lastFailMsg = null;
+                _sink.Log($"PLC{_cfg.Index}", $"已连接 {_cfg.Ip}:{_cfg.Port}（第 {ReconnectCount} 次连接）");
                 backoffMs = 1000;
                 await PollLoopAsync(ct);
             }
@@ -92,7 +97,13 @@ public sealed class PlcPoller
                 IsConnected = false;
                 ErrorCount++;
                 LastError = e.Message;
-                _sink.Log($"PLC{_cfg.Index}", $"连接/轮询异常: {e.Message}");
+                // 断线节流：同 streak 首条 ERROR（保留完整异常原文，场景脚本锚点），重复异常降 Debug 带计数
+                _failStreak = e.Message == _lastFailMsg ? _failStreak + 1 : 1;
+                _lastFailMsg = e.Message;
+                bool repeated = _failStreak > 1;
+                _sink.Log($"PLC{_cfg.Index}",
+                    $"连接/轮询异常: {e.Message}（{(repeated ? $"连续第 {_failStreak} 次" : "首次")}，退避 {backoffMs}ms 后重试）",
+                    repeated ? LogLevel.Debug : LogLevel.Error);
                 _client.Disconnect();
                 _prevStates = null;                       // 重连后重新基线（含事件引擎，不补报）
                 _engine.Reset(_cfg.Index);
@@ -156,7 +167,8 @@ public sealed class PlcPoller
             bool failed = _snap.ScanCode.StartsWith("UNK");
             _client.WriteSingleRegister(RegisterMap.RegHandshake, 0);   // 应答
             bool ok = _channel.Execute(st, RegisterMap.CmdWrite, _snap.ScanCode);
-            _sink.Log($"PLC{_cfg.Index}", $"扫码握手: 站口{st} 码=\"{_snap.ScanCode}\" 写入={(ok ? "OK" : "FAIL")}");
+            _sink.Log($"PLC{_cfg.Index}", $"扫码握手: 站口{st} 码=\"{_snap.ScanCode}\" 写入={(ok ? "OK" : "FAIL")}",
+                ok ? LogLevel.Info : LogLevel.Warn);
             if (ok)
             {
                 _engine.MarkScanInstalled(_cfg.Index, st);
@@ -176,10 +188,11 @@ public sealed class PlcPoller
             }
         }
 
-        // 4. 事件推导 + 上报（快照先发布，供 SVID 查询）
-        _snapCopy = _snap;
+        // 4. 事件推导 + 上报（快照先发布，供 SVID 查询；发布深拷贝：本对象每轮就地覆写，活对象会读到半轮混合状态）；随后同步站口主表（变化才写）
+        _snapCopy = _snap.Clone();
         var events = _engine.Diff(_snap);
         if (extra.Count > 0) events.AddRange(extra);
         if (events.Count > 0) _sink.Emit(_cfg.Index, events);
+        _sink.SyncSnapshot(_snap);
     }
 }

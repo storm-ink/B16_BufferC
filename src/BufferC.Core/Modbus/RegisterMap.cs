@@ -63,5 +63,5 @@ public static class RegisterMap
         return System.Text.Encoding.ASCII.GetString(b).TrimEnd('\0').TrimEnd();
     }
 
-    public static string LocName(int bufferIndex, int station) => $"Buffer{bufferIndex}_Port{station}";
+    public static string LocName(int bufferIndex, int station) => $"BUFFER{bufferIndex:00}_{station:00}";   // MCS 现场命名（与 EventEngine.Loc 一致）
 }

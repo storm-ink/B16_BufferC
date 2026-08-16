@@ -37,10 +37,11 @@ public static class Program
             // Linux 下 systemctl stop 发 SIGTERM：不处理则优雅关闭卡死在 exit.Wait()（实测挂 90s+ 被 SIGKILL）
             PosixSignalRegistration.Create(PosixSignal.SIGTERM, ctx => { ctx.Cancel = true; exit.Set(); });
         }
-        Console.WriteLine("按 Ctrl+C 退出");
+        service.Log("SVC", "按 Ctrl+C 退出");
         exit.Wait();
+        service.Log("SVC", "收到退出信号，开始停止");
         service.Stop();
         web?.StopAsync().GetAwaiter().GetResult();
-        Console.WriteLine("BufferC 已停止");
+        Console.WriteLine("BufferC 已停止");   // Stop 已 dispose 日志 writer：收尾行保持裸 Console（防重建句柄）
     }
 }

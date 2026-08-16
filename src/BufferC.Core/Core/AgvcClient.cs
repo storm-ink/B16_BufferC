@@ -22,11 +22,15 @@ public sealed class AgvcClient : IDisposable
     private readonly AgvcConfig _cfg;
     private readonly HttpClient _http;
     private readonly Action<string, string, LogLevel> _log;
+    private readonly Action<string, string, string, string, bool>? _onTraffic;
 
-    public AgvcClient(AgvcConfig cfg, Action<string, string, LogLevel> log)
+    /// <param name="onTraffic">交互记录回调（联调面板用）：类型/cmsIndex/请求体/最终响应文本/是否成功</param>
+    public AgvcClient(AgvcConfig cfg, Action<string, string, LogLevel> log,
+        Action<string, string, string, string, bool>? onTraffic = null)
     {
         _cfg = cfg;
         _log = log;
+        _onTraffic = onTraffic;
         _http = new HttpClient
         {
             BaseAddress = new Uri(cfg.BaseUrl!),
@@ -45,6 +49,7 @@ public sealed class AgvcClient : IDisposable
         var payload = JsonSerializer.Serialize(new { cmsIndex }, Camel);
 
         int attempts = 1 + _cfg.RetryCount;
+        string lastResp = "";
         for (int i = 0; i < attempts; i++)
         {
             try
@@ -52,36 +57,41 @@ public sealed class AgvcClient : IDisposable
                 using var resp = await _http.PostAsync("/api/hsmsRpc/queryMachines",
                     new StringContent(payload, Encoding.UTF8, "application/json"), ct);
                 string text = await resp.Content.ReadAsStringAsync(ct);
+                lastResp = text;
                 var r = JsonSerializer.Deserialize<QueryResponse>(text, CaseInsensitive);
                 if (r?.Code == "0" && r.Data is { Count: > 0 } && !string.IsNullOrWhiteSpace(r.Data[0].CarrierId))
                 {
                     var id = r.Data[0].CarrierId!;
                     _log("AGVC", $"查询货物 ID {cmsIndex} → \"{id}\"", LogLevel.Info);
+                    _onTraffic?.Invoke("queryMachines", cmsIndex, payload, text, true);
                     return id;
                 }
-                _log("AGVC", $"查询货物 ID {cmsIndex} 无结果（第 {i + 1}/{attempts} 次）: code={r?.Code} message={r?.Message} interrupt={r?.Interrupt} data={(r?.Data?.Count ?? 0)} 条", LogLevel.Info);
+                _log("AGVC", $"查询货物 ID {cmsIndex} 无结果（第 {i + 1}/{attempts} 次）: code={r?.Code} message={r?.Message} interrupt={r?.Interrupt} data={(r?.Data?.Count ?? 0)} 条", LogLevel.Warn);
             }
             catch (Exception e) when (e is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException)
             {
-                _log("AGVC", $"查询货物 ID {cmsIndex} 失败（第 {i + 1}/{attempts} 次）: {e.Message}", LogLevel.Info);
+                lastResp = e.Message;
+                _log("AGVC", $"查询货物 ID {cmsIndex} 失败（第 {i + 1}/{attempts} 次）: {e.Message}", LogLevel.Warn);
             }
             if (i + 1 < attempts)
             {
                 try { await Task.Delay(_cfg.RetryIntervalMs, ct); }
-                catch (OperationCanceledException) { return null; }
+                catch (OperationCanceledException) { _onTraffic?.Invoke("queryMachines", cmsIndex, payload, "已取消", false); return null; }
             }
         }
-        _log("AGVC", $"查询货物 ID {cmsIndex} 最终失败（{attempts} 次尝试），该站口保持无 ID，现场人工在 Web 补", LogLevel.Info);
+        _log("AGVC", $"查询货物 ID {cmsIndex} 最终失败（{attempts} 次尝试），该站口保持无 ID，现场人工在 Web 补", LogLevel.Error);
+        _onTraffic?.Invoke("queryMachines", cmsIndex, payload, lastResp, false);
         return null;
     }
 
     /// <summary>
     /// 推送单站口设备状态（变化即推）：service=PLC 34~49 控制状态寄存器原始值、present=状态区有货(1/5)、
-    /// input/outputRequest 恒 0、trayId=货物ID。失败按 RetryCount 重试，仅日志；成功判定 code=="0"。
+    /// trayId=货物ID（inputRequest/outputRequest 字段已按现场要求移除）。失败按 RetryCount 重试，仅日志；成功判定 code=="0"。
     /// </summary>
     public async Task<bool> PushStatusAsync(int plc, int station, ushort serviceReg, bool present, string trayId, CancellationToken ct)
     {
         string cmsIndex = (plc * _cfg.CmsIndexBase + station).ToString();
+        // 现场确认：去掉 inputRequest/outputRequest 两个字段（不再发送）
         var body = new
         {
             status = new object[]
@@ -91,8 +101,6 @@ public sealed class AgvcClient : IDisposable
                     cmsIndex,
                     service = serviceReg.ToString(),
                     present = present ? "1" : "0",
-                    inputRequest = "0",
-                    outputRequest = "0",
                     trayId,
                 }
             }
@@ -100,6 +108,7 @@ public sealed class AgvcClient : IDisposable
         var payload = JsonSerializer.Serialize(body, Camel);
 
         int attempts = 1 + _cfg.RetryCount;
+        string lastResp = "";
         for (int i = 0; i < attempts; i++)
         {
             try
@@ -107,25 +116,29 @@ public sealed class AgvcClient : IDisposable
                 using var resp = await _http.PostAsync("/api/hsmsRpc/pushDeviceStatusInfo",
                     new StringContent(payload, Encoding.UTF8, "application/json"), ct);
                 string text = await resp.Content.ReadAsStringAsync(ct);
+                lastResp = text;
                 var r = JsonSerializer.Deserialize<PushResponse>(text, CaseInsensitive);
                 if (r?.Code == "0")
                 {
                     _log("AGVC", $"推送设备状态 {cmsIndex} OK（service={serviceReg} present={(present ? 1 : 0)} trayId=\"{trayId}\"）", LogLevel.Info);
+                    _onTraffic?.Invoke("pushDeviceStatusInfo", cmsIndex, payload, text, true);
                     return true;
                 }
-                _log("AGVC", $"推送设备状态 {cmsIndex} 应答非成功（第 {i + 1}/{attempts} 次）: code={r?.Code} message={r?.Message}", LogLevel.Info);
+                _log("AGVC", $"推送设备状态 {cmsIndex} 应答非成功（第 {i + 1}/{attempts} 次）: code={r?.Code} message={r?.Message}", LogLevel.Warn);
             }
             catch (Exception e) when (e is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException)
             {
-                _log("AGVC", $"推送设备状态 {cmsIndex} 失败（第 {i + 1}/{attempts} 次）: {e.Message}", LogLevel.Info);
+                lastResp = e.Message;
+                _log("AGVC", $"推送设备状态 {cmsIndex} 失败（第 {i + 1}/{attempts} 次）: {e.Message}", LogLevel.Warn);
             }
             if (i + 1 < attempts)
             {
                 try { await Task.Delay(_cfg.RetryIntervalMs, ct); }
-                catch (OperationCanceledException) { return false; }
+                catch (OperationCanceledException) { _onTraffic?.Invoke("pushDeviceStatusInfo", cmsIndex, payload, "已取消", false); return false; }
             }
         }
-        _log("AGVC", $"推送设备状态 {cmsIndex} 最终失败（{attempts} 次尝试）", LogLevel.Info);
+        _log("AGVC", $"推送设备状态 {cmsIndex} 最终失败（{attempts} 次尝试）", LogLevel.Error);
+        _onTraffic?.Invoke("pushDeviceStatusInfo", cmsIndex, payload, lastResp, false);
         return false;
     }
 

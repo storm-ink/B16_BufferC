@@ -50,34 +50,45 @@ public class SecsCodecTests
     }
 
     [Fact]
-    public void EncodeDecode_Ascii_Has2ByteLengthField()
+    public void EncodeDecode_Ascii_Has1ByteLengthField()
     {
-        // E5：A=0x41 固有 2 字节长度字段（bits 7-6 = 01）
+        // MCS 现场方言：A=0x41 长度字段 1 字节（41 07 ...，非 E5 的 41 00 07）
         var bytes = SecsEncode.A("abc");
         Assert.Equal(0x41, bytes[0]);
-        Assert.Equal(3, (bytes[1] << 8) | bytes[2]);
+        Assert.Equal(3, bytes[1]);
         var items = SecsDecode.Parse(bytes);
         Assert.Equal("abc", items[0].AsString());
-        // 长字符串同样 2 字节长度字段（无需升级标志）
-        var s = new string('X', 300);
-        bytes = SecsEncode.A(s);
-        Assert.Equal(0x41, bytes[0]);
-        Assert.Equal(300, (bytes[1] << 8) | bytes[2]);
+        // 超过 255 字符超出 1 字节长度字段，应拒绝
+        Assert.Throws<FormatException>(() => SecsEncode.A(new string('X', 300)));
     }
 
     [Fact]
-    public void EncodeDecode_U2_Uses3ByteLengthField()
+    public void EncodeDecode_U2_Uses1ByteLengthField()
     {
-        // E5：U2=0xA9 固有 3 字节长度字段（bits 7-6 = 10）
+        // MCS 现场方言：U2=0xA9 长度字段 1 字节=字节数（A9 02 00 CC = 1 个值 204）
         var bytes = SecsEncode.U2(204);
         Assert.Equal(0xA9, bytes[0]);
-        Assert.Equal(2, (bytes[1] << 16) | (bytes[2] << 8) | bytes[3]);
+        Assert.Equal(2, bytes[1]);
         var items = SecsDecode.Parse(bytes);
         Assert.Equal((uint)204, items[0].AsUInt());
-        // B=0x25 固有 1 字节长度字段
+        // B=0x21 固有 1 字节长度字段（现场 MCS 源码确认）
         var b = SecsEncode.B(0x80);
-        Assert.Equal(0x25, b[0]);
+        Assert.Equal(0x21, b[0]);
         Assert.Equal(1, b[1]);
+    }
+
+    [Fact]
+    public void HsmsMessage_Parse_RealMcs_S1F3W()
+    {
+        // 现场 MCS 实测帧：S1F3W 查 SVID21（SCState）——L[1 元素][U2 长度1字节=2字节, 值 0x0015=21]
+        var m = HsmsMessage.Parse(Convert.FromHexString("000181030000000000050101A9020015"));
+        Assert.Equal(1, m.Stream);
+        Assert.Equal(3, m.Function);
+        Assert.True(m.WBit);
+        Assert.Equal(5u, m.SystemBytes);
+        var items = m.Items();
+        Assert.Single(items);
+        Assert.Equal(21u, items[0].Children![0].AsUInt());
     }
 
     [Fact]
@@ -88,8 +99,56 @@ public class SecsCodecTests
         Assert.Equal(6, parsed.Stream);
         Assert.Equal(11, parsed.Function);
         Assert.True(parsed.WBit);
-        Assert.Equal((ushort)0x1234, parsed.SystemBytes);
+        Assert.Equal(0x1234u, parsed.SystemBytes);
         Assert.Equal((uint)501, parsed.Items()[0].Children![1].AsUInt());
+    }
+
+    [Fact]
+    public void HsmsMessage_Parse_RealMcs_SelectReq()
+    {
+        // 现场 MCS 实测帧：Select.req（SessionID=FFFF, SType=1, sys=0）
+        var m = HsmsMessage.Parse(Convert.FromHexString("FFFF0000000100000000"));
+        Assert.Equal(0xFFFF, m.SessionId);
+        Assert.Equal(0, m.Stream);
+        Assert.Equal(1, m.Function);
+        Assert.Equal(0u, m.SystemBytes);
+        // 应答 Select.rsp 按 E37 编码：字节2/3=0，SType=2
+        var rsp = new HsmsMessage { SessionId = 0xFFFF, Stream = 0, Function = 2, SystemBytes = 0 }.ToBytes()[4..];
+        Assert.Equal("FFFF0000000200000000", Convert.ToHexString(rsp));
+    }
+
+    [Fact]
+    public void HsmsMessage_Parse_RealMcs_S1F13W()
+    {
+        // 现场 MCS 实测帧：S1F13W（SessionID=1, 流字节 0x81=W位+S1, sys=0x100, 正文 L[0]）
+        var m = HsmsMessage.Parse(Convert.FromHexString("0001810D0000000001000100"));
+        Assert.Equal(1, m.SessionId);
+        Assert.Equal(1, m.Stream);
+        Assert.Equal(13, m.Function);
+        Assert.True(m.WBit);
+        Assert.Equal(0x100u, m.SystemBytes);
+        Assert.Empty(m.Items()[0].Children!);               // L[0]
+        // 应答 S1F14：会话/系统字节原样回显，E37 数据头（字节4/5=0）
+        // 正文按 MCS 现场方言：01 02 21 01 00 01 02 41 07 "BUFFERC" 41 05 "0.1.0"
+        // （L 长度=元素个数 2；B=0x21；A 长度 1 字节）
+        var body = SecsEncode.L(SecsEncode.B(0), SecsEncode.L(SecsEncode.A("BUFFERC"), SecsEncode.A("0.1.0")));
+        Assert.Equal("010221010001024107425546464552434105302E312E30", Convert.ToHexString(body));
+        var rsp = new HsmsMessage { SessionId = 1, Stream = 1, Function = 14, SystemBytes = 0x100, Body = body }.ToBytes()[4..];
+        Assert.Equal("0001010E000000000100", Convert.ToHexString(rsp[..10]));
+    }
+
+    [Fact]
+    public void SecsFormat_WireCodes_MatchMcsSource()
+    {
+        // 现场 MCS 源码（枚举 = 线上字节 >> 2）确认的格式码表
+        Assert.Equal(0x01, (byte)SecsFormat.L);
+        Assert.Equal(0x21, (byte)SecsFormat.B);
+        Assert.Equal(0x25, (byte)SecsFormat.Boolean);
+        Assert.Equal(0x41, (byte)SecsFormat.A);
+        Assert.Equal(0xA5, (byte)SecsFormat.U1);
+        Assert.Equal(0xA9, (byte)SecsFormat.U2);
+        Assert.Equal(0xB1, (byte)SecsFormat.U4);
+        Assert.Equal(0x71, (byte)SecsFormat.I4);
     }
 
     [Fact]

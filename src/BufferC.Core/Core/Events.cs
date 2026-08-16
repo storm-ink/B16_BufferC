@@ -21,7 +21,7 @@ public enum EventKind
 /// <summary>一个待上报事件</summary>
 public sealed record PlcEvent(EventKind Kind, Dictionary<string, string> Params);
 
-/// <summary>单个 PLC 的一次轮询快照</summary>
+/// <summary>单个 PLC 的一次轮询快照（发布给 UI/SVID/推送线程时用 Clone()：轮询器每轮就地覆写，活对象发布会读到半轮混合状态）</summary>
 public sealed class PlcSnapshot
 {
     public int PlcIndex;
@@ -36,6 +36,22 @@ public sealed class PlcSnapshot
     public ushort Handshake;                         // 340
     public ushort ScanStation;                       // 323
     public string ScanCode = "";                     // 324~339
+
+    public PlcSnapshot Clone() => new()
+    {
+        PlcIndex = PlcIndex,
+        BufferNo = BufferNo,
+        AlarmSummary = AlarmSummary,
+        StationState = (ushort[])StationState.Clone(),
+        StationAlarm = (ushort[])StationAlarm.Clone(),
+        StationAvail = (ushort[])StationAvail.Clone(),
+        CarrierId = (string[])CarrierId.Clone(),
+        EchoNo = EchoNo,
+        EchoStation = (ushort[])EchoStation.Clone(),
+        Handshake = Handshake,
+        ScanStation = ScanStation,
+        ScanCode = ScanCode,
+    };
 }
 
 /// <summary>
@@ -44,14 +60,17 @@ public sealed class PlcSnapshot
 /// </summary>
 public sealed class EventEngine
 {
+    private readonly object _lock = new();           // 15 个 poller 线程并发调用 Diff/Reset/MarkScanInstalled：统一串行化（推导极轻，锁开销可忽略）
     private readonly Dictionary<int, PlcSnapshot> _base = new();
     // 扫码路径完成写入后抑制 204（手动放入已由 501+201 上报）；取出时清除
     private readonly HashSet<string> _suppress204 = new();
     // 已上报的 SC 级告警（"plc:alid"）：同告警多单位时 102/101 只报一次，402/401 逐单位（spec 2.2.2/2.2.3）
     private readonly HashSet<string> _scAlarms = new();
 
-    public void MarkScanInstalled(int plcIndex, int station) =>
-        _suppress204.Add($"{plcIndex}:{station}");
+    public void MarkScanInstalled(int plcIndex, int station)
+    {
+        lock (_lock) _suppress204.Add($"{plcIndex}:{station}");
+    }
 
     /// <summary>AGV 放入完成（状态 2→1）回调：BufferC 用于启动「等扫码窗口 → 无 ID 则找 AGVC 要货物 ID」（方向1）</summary>
     public Action<int, int>? OnAgvPutCompleted;
@@ -60,15 +79,23 @@ public sealed class EventEngine
     public Action<int, int, string>? OnAbnormalTransition;
 
     /// <summary>重连重同步时清除基线（断线期间的变化不补报，只做状态同步）</summary>
-    public void Reset(int plcIndex) => _base.Remove(plcIndex);
+    public void Reset(int plcIndex)
+    {
+        lock (_lock) _base.Remove(plcIndex);
+    }
 
-    /// <summary>对比新快照，返回应上报的事件（基线必须深拷贝：调用方会复用同一快照对象）</summary>
+    /// <summary>对比新快照，返回应上报的事件（基线必须深拷贝：调用方会复用同一快照对象）；内部加锁串行化 15 线程并发推导</summary>
     public List<PlcEvent> Diff(PlcSnapshot cur)
+    {
+        lock (_lock) return DiffCore(cur);
+    }
+
+    private List<PlcEvent> DiffCore(PlcSnapshot cur)
     {
         var events = new List<PlcEvent>();
         if (!_base.TryGetValue(cur.PlcIndex, out var prev))
         {
-            _base[cur.PlcIndex] = Clone(cur);
+            _base[cur.PlcIndex] = cur.Clone();
             return events;   // 基线
         }
 
@@ -142,25 +169,9 @@ public sealed class EventEngine
             if (a == 1 && b == 0) events.Add(new PlcEvent(EventKind.UnitInService, P("UnitId", Unit(cur.PlcIndex, i + 1), "Station", (i + 1).ToString())));
         }
 
-        _base[cur.PlcIndex] = Clone(cur);
+        _base[cur.PlcIndex] = cur.Clone();
         return events;
     }
-
-    private static PlcSnapshot Clone(PlcSnapshot s) => new()
-    {
-        PlcIndex = s.PlcIndex,
-        BufferNo = s.BufferNo,
-        AlarmSummary = s.AlarmSummary,
-        StationState = (ushort[])s.StationState.Clone(),
-        StationAlarm = (ushort[])s.StationAlarm.Clone(),
-        StationAvail = (ushort[])s.StationAvail.Clone(),
-        CarrierId = (string[])s.CarrierId.Clone(),
-        EchoNo = s.EchoNo,
-        EchoStation = (ushort[])s.EchoStation.Clone(),
-        Handshake = s.Handshake,
-        ScanStation = s.ScanStation,
-        ScanCode = s.ScanCode,
-    };
 
     private static Dictionary<string, string> P(params string[] kv)
     {
@@ -169,6 +180,7 @@ public sealed class EventEngine
         return d;
     }
 
-    public static string Loc(int plcIndex, int station) => $"Buffer{plcIndex}_Port{station}";
-    public static string Unit(int plcIndex, int station) => $"Buffer{plcIndex}_AI{station:00}";
+    // MCS 现场命名规则（2026-08-15）：单位/位置统一 = BUFFER{机台号2位}_{站口2位}（Buffer1_Port2 → BUFFER01_02）
+    public static string Loc(int plcIndex, int station) => $"BUFFER{plcIndex:00}_{station:00}";
+    public static string Unit(int plcIndex, int station) => $"BUFFER{plcIndex:00}_{station:00}";
 }

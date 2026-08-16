@@ -59,16 +59,22 @@ public sealed class ModbusTcpClient : IDisposable
 
     public ushort[] ReadHoldingRegisters(ushort address, ushort count)
     {
-        var resp = Transact(new byte[] { 0x03,
-            (byte)(address >> 8), (byte)address,
-            (byte)(count >> 8), (byte)count });
-        if (resp[0] == 0x83)
-            throw new ModbusException($"FC03 异常码 {resp[1]} @ {address}");
-        int byteCount = resp[1];
-        var regs = new ushort[byteCount / 2];
-        for (int i = 0; i < regs.Length; i++)
-            regs[i] = (ushort)((resp[2 + i * 2] << 8) | resp[3 + i * 2]);
-        return regs;
+        // FC03 单帧上限 125 字（Modbus 规范，真 PLC 超限拒收）：自动分段逐帧读取后拼接
+        const int maxWords = 125;
+        var all = new ushort[count];
+        for (int off = 0; off < count; off += maxWords)
+        {
+            int n = Math.Min(maxWords, count - off);
+            var resp = Transact(new byte[] { 0x03,
+                (byte)((address + off) >> 8), (byte)(address + off),
+                (byte)(n >> 8), (byte)n });
+            if (resp[0] == 0x83)
+                throw new ModbusException($"FC03 异常码 {resp[1]} @ {address + off}");
+            int byteCount = resp[1];
+            for (int i = 0; i < byteCount / 2; i++)
+                all[off + i] = (ushort)((resp[2 + i * 2] << 8) | resp[3 + i * 2]);
+        }
+        return all;
     }
 
     public void WriteSingleRegister(ushort address, ushort value)

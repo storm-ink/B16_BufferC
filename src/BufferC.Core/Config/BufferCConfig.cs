@@ -13,9 +13,11 @@ public sealed class BufferCConfig
     public int EchoTimeoutMs { get; set; } = 5000;         // 命令回显超时
     public int EchoRetryCount { get; set; } = 1;           // 超时重试次数
     public string LogFile { get; set; } = "bufferc.log";
+    public int LogRetentionDays { get; set; } = 7;           // 滚动日志保留天数（按天滚动，启动与日期翻转时清理过期文件）
+    public string? AuditFile { get; set; } = "bufferc.audit.log";   // 审计日志基名（SECS 收发摘要/命令生命周期）；null/空=审计通道关闭
     public string? DbPath { get; set; }                    // 库存台账 SQLite 路径（null=内存模式）
     public int WebPort { get; set; }                       // Web 界面端口（0=不启动）
-    public string LogLevel { get; set; } = "info";         // info|debug|trace（启动最小级别；联调可 /api/debug 运行时切换）
+    public string LogLevel { get; set; } = "info";         // error|warn|info|debug|trace（启动最小级别；联调可 /api/debug 运行时切换）
     public bool LogModbusFrames { get; set; }              // Modbus TX/RX 帧日志（trace 级，默认关；联调开）
     public AgvcConfig Agvc { get; set; } = new();          // AGVC HTTP 集成（baseUrl 空=出站调用禁用）
 
@@ -41,8 +43,10 @@ public sealed class BufferCConfig
         if (cfg.WebPort is < 0 or > 65535) errors.Add($"Web 端口非法: {cfg.WebPort}");
         if (cfg.WebPort > 0 && cfg.WebPort == cfg.Hsms.ListenPort)
             errors.Add($"Web 端口 {cfg.WebPort} 与 HSMS 端口 {cfg.Hsms.ListenPort} 冲突");
-        if (!new[] { "info", "debug", "trace" }.Contains(cfg.LogLevel.ToLowerInvariant()))
-            errors.Add($"logLevel 非法: {cfg.LogLevel}（允许 info/debug/trace）");
+        if (!new[] { "error", "warn", "info", "debug", "trace" }.Contains(cfg.LogLevel.ToLowerInvariant()))
+            errors.Add($"logLevel 非法: {cfg.LogLevel}（允许 error/warn/info/debug/trace）");
+        if (cfg.LogRetentionDays is < 1 or > 365)
+            errors.Add($"logRetentionDays 非法: {cfg.LogRetentionDays}（允许 1~365）");
         if (cfg.Agvc.CmsIndexBase <= RegisterMap.StationsPerPlc)
             errors.Add($"agvc.cmsIndexBase {cfg.Agvc.CmsIndexBase} 非法（必须大于站口数 {RegisterMap.StationsPerPlc}，否则站口位溢出到机台位）");
         if (cfg.Agvc.CmsIndexBase > 1_000_000)
@@ -85,6 +89,7 @@ public sealed class HsmsConfig
     public string SoftRev { get; set; } = "0.1.0";
     public int T3Ms { get; set; } = 45_000;
     public string SvidCarrierFormat { get; set; } = "l4";  // S1F4 SVID15 结构：l4=L,4(ID,Loc,Time,State) / l2=L,2(ID,Loc)（现场按 MCS 解析确认）
+    public int UnitLimit { get; set; } = 0;                // S1F4 SVID29 单位列表上限（0=全部；联调期可先只报前 N 个）
     public bool LogFrames { get; set; } = true;            // 协议帧日志（联调期开，运行期可关）
 }
 

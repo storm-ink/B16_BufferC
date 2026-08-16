@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace BufferC.Host;
 
@@ -14,6 +15,9 @@ public sealed record DebugToggle(bool Enabled);
 public sealed record DebugLevelReq(string Level);
 public sealed record DebugCmdReq(int Plc, int Station, ushort Cmd, string? CarrierId);
 public sealed record DebugRegWrite(int Plc, int Addr, ushort[] Values);
+public sealed record DebugCimReq(bool Online);
+public sealed record ManualQueryReq(string CmsIndex);
+public sealed record ManualPushReq(string CmsIndex, string? Service, string? Present, string? TrayId);
 
 public static class WebUi
 {
@@ -21,6 +25,7 @@ public static class WebUi
     {
         // net6.0 无 CreateSlimBuilder（.NET 8+）：用 CreateBuilder
         var builder = WebApplication.CreateBuilder();
+        builder.Logging.ClearProviders();   // 消除 ASP.NET 自带 Console logger（统一走 BufferC 日志管道）
         builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
         builder.Services.AddRouting();
         var app = builder.Build();
@@ -38,10 +43,29 @@ public static class WebUi
         }));
         app.MapGet("/api/events", (HttpContext ctx, int? tail) => Json(ctx, service.GetEvents(tail ?? 50)));
         app.MapGet("/api/alarm-history", (HttpContext ctx, int? tail) => Json(ctx, service.GetAlarmHistory(tail ?? 50)));
+        app.MapGet("/api/agvc/traffic", (HttpContext ctx, int? tail) => Json(ctx, new { traffic = service.GetAgvcTraffic(tail ?? 50) }));
+        // HSMS 收发记录（MCS 联调页：MCS 发来 / 回给 MCS 的每条报文原文）
+        app.MapGet("/api/hsms/traffic", (HttpContext ctx, int? tail) => Json(ctx, new { traffic = service.GetHsmsTraffic(tail ?? 50) }));
+        // 台账（站口合并视图，表直出）：MCS 联调页「台账」卡片点击刷新
+        app.MapGet("/api/inventory", (HttpContext ctx) => Json(ctx, new { stations = service.GetInventoryView() }));
+        // AGVC 联调页：两接口手动触发（与自动路径同口径，调用同样进入 traffic 记录）
+        // 注意：net6 minimal API 的 async 处理器在 await 后响应已开始，Json 助手设 StatusCode 会抛「Headers are read-only」
+        // → 沿用全站同步处理器风格（阻塞式，与 ManualInstall 等命令路径一致）
+        app.MapPost("/api/agvc/manual/queryMachines", (HttpContext ctx, ManualQueryReq req) =>
+        {
+            var (ok, msg) = service.ManualQueryMachines(req.CmsIndex).GetAwaiter().GetResult();
+            return Json(ctx, new { ok, message = msg });
+        });
+        app.MapPost("/api/agvc/manual/pushDeviceStatusInfo", (HttpContext ctx, ManualPushReq req) =>
+        {
+            var (ok, msg) = service.ManualPushStatus(req.CmsIndex, req.Service, req.Present, req.TrayId).GetAwaiter().GetResult();
+            return Json(ctx, new { ok, message = msg });
+        });
         app.MapGet("/api/logs", (HttpContext ctx, int? tail, string? category, string? level) =>
         {
-            // level 语义：最大显示级别（info=只 Info，trace=全显示）
-            LogLevel? maxLevel = level != null && Enum.TryParse<LogLevel>(level, true, out var lv) ? lv : null;
+            // level 语义：最大显示级别（error=只 Error，info=到 Info 为止，trace=全显示）
+            BufferC.Core.Core.LogLevel? maxLevel =
+                level != null && Enum.TryParse<BufferC.Core.Core.LogLevel>(level, true, out var lv) ? lv : null;
             return Json(ctx, service.GetLogs(tail ?? 200, category, maxLevel));
         });
         app.MapPost("/api/alarms/{alid:long}/ack", (HttpContext ctx, long alid) =>
@@ -89,9 +113,15 @@ public static class WebUi
                 req.Cmd == RegisterMap.CmdWrite ? req.CarrierId : null);
             return Json(ctx, new { ok = r.Ok, elapsedMs = r.ElapsedMs });
         });
+        // CIM 状态事件（1.1.4 OFFLINE→ONLINEREMOTE By CIM 自测）：online=false→CEID 1，true→CEID 3
+        app.MapPost("/api/debug/cim", (HttpContext ctx, DebugCimReq req) =>
+            Json(ctx, new { sent = service.TriggerCimState(req.Online) }));
+        // 库存更新请求（1.2.6）：手动触发 S6F11 CEID 502，请求 MCS 下发 InventoryDataSend
+        app.MapPost("/api/debug/inventory-request", (HttpContext ctx) =>
+            Json(ctx, new { sent = service.TriggerInventoryUpdateRequest() }));
 
         app.StartAsync().GetAwaiter().GetResult();
-        Console.WriteLine($"[Web] 界面已启动 http://0.0.0.0:{port}");
+        service.Log("Web", $"界面已启动 http://0.0.0.0:{port}");
         return app;
     }
 

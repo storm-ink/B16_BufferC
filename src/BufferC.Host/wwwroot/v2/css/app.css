@@ -1,0 +1,227 @@
+/* ============================================================
+   BufferC v2 设计 token（dataviz skill 方法论，2026-08-17）
+   - 分类槽位 1/2（HSMS 收/发）：validate_palette.js 校验通过
+     light #2a78d6,#eb6834（surface #fcfcfb）：CVD ΔE 24.7 / normal 33.6 / 对比度全 ≥3:1 → ALL PASS
+     dark  #3987e5,#d95926（surface #1a1a19）：CVD ΔE 26.8 / normal 31.8 / 对比度全 ≥3:1 → ALL PASS
+   - 状态色跨主题固定（skill 规定）：good/warn/serious/crit，浅色面 warn(1.79)/serious(2.57) 对比度
+     不足 3:1 属有意为之 → 所有状态填充强制配图标+文字（徽章带文字、网格带状态名+图标），颜色绝不单独表意
+   - 徽章文字按填充亮度取色（WCAG 实测）：good/warn/serious→ink，crit→白，cat-1 浅色→白 / 其余→ink
+   - 6 态站口网格 = 固定状态色上的语义状态色阶（B16 扩展），非分类色阶——已声明为文档化例外
+   - 主题：用户选定浅色默认；data-theme=dark 手动切换（无媒体查询，不跟随系统）
+   - 老浏览器下限：CSS 变量需 Chrome 49+；不用 :where()/:has()/oklch()/color-mix
+   ============================================================ */
+:root {
+  color-scheme: light;
+  /* 表面与文字 */
+  --page: #f9f9f7; --surface: #fcfcfb; --surface-2: #fafafa;
+  --ink: #0b0b0b; --ink-2: #52514e; --ink-3: #898781;
+  --gridline: #e1e0d9; --border: rgba(11, 11, 11, .10);
+  --th-bg: #f5f5f5;
+  /* 状态色（跨主题固定，配图标+文字） */
+  --status-good: #0ca30c; --status-warn: #fab219; --status-serious: #ec835a; --status-crit: #d03b3b;
+  /* 分类槽位 1/2（HSMS 收/发） */
+  --cat-1: #2a78d6; --cat-2: #eb6834;
+  /* 站口状态（语义状态色阶：复用状态色，不发明色相） */
+  --state-empty: #e8e7e2; --state-has: var(--status-good); --state-placing: var(--status-warn);
+  --state-removing: var(--status-serious); --state-fault: var(--status-crit); --state-manual: var(--status-good);
+  /* 回显高亮（原 JS 硬编码迁移） */
+  --hl-ok: #c8e6c9; --hl-target: #fff9c4;
+  /* 终端色（固定深色，双主题不变） */
+  --log-bg: #1e1e1e; --log-fg: #d4d4d4; --log-time: #808080; --log-cat: #569cd6;
+  --log-cmd: #c586c0; --log-err: #f44747; --log-ok: #4ec9b0; --log-warn: #d7ba7d;
+  --log-frame: #9e9e9e; --log-debug: #8a9bb5; --log-trace: #5c6b7a;
+  /* 徽章/填充上的文字（按亮度取色） */
+  --on-good: #0b0b0b; --on-warn: #0b0b0b; --on-serious: #0b0b0b; --on-crit: #ffffff;
+  --on-cat1: #ffffff; --on-cat2: #0b0b0b;
+  /* 排版/间距 */
+  --font-ui: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  --font-mono: Consolas, "Cascadia Mono", monospace;
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 24px; --space-6: 32px;
+  --radius-sm: 4px; --radius-md: 6px;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface: #1a1a19; --surface-2: #1f1f1e;
+  --ink: #ffffff; --ink-2: #c3c2b7; --ink-3: #898781;
+  --gridline: #2c2c2a; --border: rgba(255, 255, 255, .10);
+  --th-bg: #242423;
+  --cat-1: #3987e5; --cat-2: #d95926;
+  --state-empty: #2c2c2a;
+  --hl-ok: #1c3a2a; --hl-target: #3d3316;
+  --on-cat1: #0b0b0b; --on-cat2: #0b0b0b;
+}
+
+/* ---- 基础 ---- */
+* { box-sizing: border-box; }
+body { font-family: var(--font-ui); margin: 0; height: 100vh; display: flex; flex-direction: column;
+       background: var(--page); color: var(--ink); font-size: 14px; overflow: hidden; }
+.mono { font-family: var(--font-mono); font-size: 10px; color: var(--ink-2); word-break: break-all;
+        font-variant-numeric: tabular-nums; }
+
+/* ---- 状态栏（顶层全宽）+ KPI 瓷砖 ---- */
+.bar { display: flex; flex-wrap: wrap; gap: 2px var(--space-3); align-items: stretch; background: var(--surface);
+       border-bottom: 1px solid var(--gridline); padding: var(--space-2) var(--space-3); flex-shrink: 0; }
+.tile { display: inline-flex; flex-direction: column; justify-content: center; gap: 1px;
+        padding: 2px var(--space-3); border-left: 1px solid var(--border); }
+.tile-label { font-size: 11px; color: var(--ink-3); }
+.tile-value { font-size: 18px; font-weight: 600; line-height: 1.15; }
+.tile-note { font-size: 10px; color: var(--ink-2); }
+.tile.t-ok .tile-value { color: var(--status-good); }
+.tile.t-crit .tile-value { color: var(--status-crit); }
+.tile.t-off .tile-value { color: var(--ink-3); }
+
+/* ---- 徽章 ---- */
+.badge { display: inline-block; padding: 1px 8px; border-radius: 9px; font-size: 12px; }
+.b-ok { background: var(--status-good); color: var(--on-good); }
+.b-warn { background: var(--status-warn); color: var(--on-warn); }
+.b-err { background: var(--status-crit); color: var(--on-crit); }
+.b-off { background: var(--ink-3); color: #fff; }
+
+/* ---- 卡片 ---- */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md);
+        padding: var(--space-2); margin: var(--space-2) 0; }
+.card h2 { font-size: 14px; margin: 2px 0 6px; display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+
+/* ---- 站口状态网格（色阶 + 图标 + 文字三者并用） ---- */
+.grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px; }
+.cell { border-radius: var(--radius-sm); padding: 4px 6px; font-size: 11px; min-height: 40px; position: relative; }
+.st0 { background: var(--state-empty); color: var(--ink-2); }
+.st1 { background: var(--state-has); color: var(--on-good); }
+.st2 { background: var(--state-placing); color: var(--on-warn); }
+.st3 { background: var(--state-removing); color: var(--on-serious); }
+.st4 { background: var(--state-fault); color: var(--on-crit); }
+.st99 { background: var(--state-manual); color: var(--on-good); }
+.offline-mark { position: absolute; top: 1px; right: 3px; font-size: 9px; background: rgba(0,0,0,.55);
+                border-radius: 3px; padding: 0 3px; color: #fff; }
+.chip-trunc { background: var(--hl-target); color: #000; border-radius: 3px; padding: 0 3px; font-size: 9px; }
+.chip-alarm { background: var(--status-crit); color: var(--on-crit); border-radius: 3px; padding: 0 3px; font-size: 9px; }
+
+/* ---- 通用小字/说明行 ---- */
+.stat-line { font-size: 11px; color: var(--ink-2); margin: 4px 0; }
+.muted-sm { font-weight: normal; font-size: 12px; color: var(--ink-3); }
+
+/* ---- 寄存器表 ---- */
+.reg-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 4px; }
+.reg-table th, .reg-table td { border: 1px solid var(--gridline); padding: 2px 5px; text-align: left; }
+.reg-table th { background: var(--th-bg); }
+.reg-table td:nth-child(2) { font-variant-numeric: tabular-nums; }
+
+/* ---- 事件页 tab ---- */
+.tabbar button { padding: 4px 14px; margin-right: 4px; border: 1px solid var(--border); background: var(--surface-2);
+                 border-radius: 4px 4px 0 0; cursor: pointer; color: var(--ink-2); }
+.tabbar button.active { background: var(--surface); border-bottom: 2px solid var(--cat-1); font-weight: bold; color: var(--ink); }
+.tabpanel { display: none; } .tabpanel.active { display: block; }
+
+/* ---- 列表表 ---- */
+table.list { border-collapse: collapse; width: 100%; background: var(--surface); font-size: 12px; }
+table.list th, table.list td { border: 1px solid var(--gridline); padding: 3px 7px; text-align: left; }
+table.list th { background: var(--th-bg); }
+
+/* ---- 文本状态色 ---- */
+.ok-txt { color: var(--status-good); } .fail-txt { color: var(--status-crit); }
+
+/* ---- 命令行 ---- */
+.cmd { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.cmd input, .cmd select, .cmd button { padding: 5px 9px; font-size: 13px; }
+
+/* ---- 终端面（固定深色，双主题不变） ---- */
+.logs { background: var(--log-bg); color: var(--log-fg); font-family: var(--font-mono); font-size: 11px;
+        max-height: 260px; overflow-y: auto; padding: 6px 8px; border-radius: var(--radius-sm); margin-top: 6px; }
+.logs .t { color: var(--log-time); } .logs .c { color: var(--log-cat); }
+.logs .l-cmd { color: var(--log-cmd); } .logs .l-err { color: var(--log-err); } .logs .l-ok { color: var(--log-ok); }
+.logs .l-warn { color: var(--log-warn); }
+.logs .l-frame { color: var(--log-frame); } .logs .l-debug { color: var(--log-debug); } .logs .l-trace { color: var(--log-trace); }
+.logs-lg { font-size: 12px; }
+.h-150 { height: 150px; } .h-280 { height: 280px; }
+.maxh-380 { max-height: 380px; } .maxh-420 { max-height: 420px; }
+
+/* ---- 日志过滤 ---- */
+.log-filter button { margin-right: 4px; padding: 2px 10px; font-size: 12px; cursor: pointer; }
+
+/* ---- 弹窗 ---- */
+.overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: none; align-items: center;
+           justify-content: center; z-index: 99; }
+.overlay .box { background: var(--surface); border-radius: 8px; padding: 18px 24px; max-width: 480px; color: var(--ink); }
+.overlay .box p { margin: 8px 0; }
+.overlay .box button { padding: 6px 18px; margin: 0 6px; cursor: pointer; }
+.btn-row { text-align: center; margin-top: 12px; }
+.paused { outline: 2px solid var(--status-warn); }
+
+/* ---- 页面区 ---- */
+.page { display: none; } .page.active { display: block; }
+.reg-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 8px; }
+.reg-col { border: 1px solid var(--gridline); border-radius: var(--radius-sm); padding: 6px; background: var(--surface-2); }
+.reg-col h3 { font-size: 12px; margin: 0 0 4px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.reg-col h3 button { font-size: 11px; padding: 1px 10px; cursor: pointer; }
+.reg-raw { font-size: 11px; color: var(--ink-2); margin-top: 4px; max-height: 240px; overflow-y: auto; }
+
+/* ---- 步骤行（①②③④） ---- */
+.step { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 0;
+        border-bottom: 1px dashed var(--gridline); font-size: 13px; }
+.step-no { background: var(--cat-1); color: #fff; border-radius: 50%; width: 24px; height: 24px; flex: 0 0 24px;
+           display: inline-flex; align-items: center; justify-content: center; font-weight: bold; }
+
+/* ---- 收发记录条目 / HSMS 方向徽章（分类槽位 1/2） ---- */
+.agvc-entry { border-bottom: 1px dashed var(--gridline); padding: 6px 0; }
+.agvc-entry pre { margin: 2px 0 2px 10px; padding: 4px 6px; background: var(--surface-2); border-radius: 3px; white-space: pre-wrap; }
+.dir { border-radius: 3px; padding: 0 5px; font-size: 11px; }
+.dir-in { background: var(--cat-1); color: var(--on-cat1); }
+.dir-out { background: var(--cat-2); color: var(--on-cat2); }
+
+/* ---- 回显高亮行 ---- */
+.hl-ok { background: var(--hl-ok); font-weight: bold; }
+.hl-target { background: var(--hl-target); }
+
+/* ---- 无效输入（红色描边） ---- */
+.invalid { outline: 1px solid var(--status-crit); }
+
+/* ---- Phase 2 布局：状态栏顶层全宽 + 左侧栏（下沿到底）+ 页签条 ---- */
+#below { flex: 1; display: flex; min-height: 0; }
+#sidebar { width: 200px; flex-shrink: 0; display: flex; flex-direction: column;
+           background: var(--page); border-right: 1px solid var(--gridline); overflow-y: auto; padding: 8px 0 0; }
+#sideGroups { flex: 1; }
+.side-group { margin-bottom: 6px; }
+.side-title { font-size: 11px; color: var(--ink-3); padding: 4px 14px; }
+.side-item { display: block; width: 100%; text-align: left; padding: 7px 14px; border: none;
+             background: none; font-size: 13px; cursor: pointer; color: var(--ink-2); }
+.side-item:hover { background: var(--surface-2); color: var(--ink); }
+.side-item.active { background: var(--surface); border-left: 3px solid var(--cat-1); font-weight: bold; color: var(--ink); }
+#sideFooter { border-top: 1px solid var(--gridline); padding: 10px 14px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+#sideFooter button { font-size: 13px; cursor: pointer; }
+#sideFooter a { font-size: 12px; color: var(--cat-1); text-decoration: none; }
+#main { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--surface); }
+#tabstrip { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 10px 0; flex-shrink: 0; }
+.tab-wrap { display: inline-flex; align-items: center; border: 1px solid var(--border); border-bottom: none;
+            border-radius: 5px 5px 0 0; background: var(--surface-2); }
+.tab-wrap.active { background: var(--surface); border-bottom: 2px solid var(--cat-1); font-weight: bold; }
+.tab { padding: 5px 12px; cursor: pointer; font-size: 13px; color: var(--ink-2); }
+.tab-wrap.active .tab { color: var(--ink); }
+.tab-x { padding: 5px 8px; cursor: pointer; color: var(--ink-3); }
+.tab-x:hover { color: var(--status-crit); }
+#content { flex: 1; overflow-y: auto; padding: 8px 10px; }
+
+/* ---- 设置面板滑动开关 ---- */
+.switch { position: relative; display: inline-block; width: 38px; height: 20px; flex-shrink: 0; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.switch .slider { position: absolute; inset: 0; background: var(--ink-3); border-radius: 20px; transition: .2s; cursor: pointer; }
+.switch .slider:before { content: ''; position: absolute; width: 14px; height: 14px; left: 3px; top: 3px;
+                         background: #fff; border-radius: 50%; transition: .2s; }
+.switch input:checked + .slider { background: var(--cat-1); }
+.switch input:checked + .slider:before { transform: translateX(18px); }
+.switch input:disabled + .slider { opacity: .5; cursor: not-allowed; }
+.set-item { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 6px 0; font-size: 13px; }
+
+/* ---- Phase 4：告警条 / tab 角标 / 空行 / 行 hover / 错误 chip / ack 按钮 ---- */
+.alarm-strip { background: var(--status-crit); color: var(--on-crit); padding: 6px 12px; cursor: pointer;
+               font-size: 13px; font-weight: bold; text-align: center; }
+.alarm-strip[hidden] { display: none; }
+.tile.t-crit.alarm-on .tile-value { animation: alarm-pulse 2s ease-in-out infinite; }
+@keyframes alarm-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+@media (prefers-reduced-motion: reduce) { .tile.t-crit.alarm-on .tile-value { animation: none; } }
+.tab-badge { background: var(--status-crit); color: var(--on-crit); border-radius: 8px; padding: 0 6px; margin-left: 6px; font-size: 11px; }
+.tab-badge[hidden] { display: none; }
+.empty-row { color: var(--ink-3); text-align: center; }
+table.list tbody tr:hover td, table.list tr:hover td { background: var(--surface-2); }
+.reg-table tr:hover td { background: var(--surface-2); }
+.err-chip { background: var(--status-crit); color: var(--on-crit); padding: 3px 10px; font-size: 12px; margin-bottom: 4px; border-radius: var(--radius-sm); }
+.btn-ack { background: var(--status-crit); color: var(--on-crit); border: none; border-radius: var(--radius-sm); padding: 3px 12px; cursor: pointer; }

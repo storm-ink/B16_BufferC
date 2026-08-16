@@ -1,10 +1,13 @@
 using System.Net;
+using System.Text;
+using System.Text.Json;
 using BufferC.Harness;
 
 // 联调调试台（Windows 侧运行）：
 //   BufferC.Simulator demo [--plc-port 5501] [--mcs-host 127.0.0.1] [--mcs-port 5000]   全链路自动预演（联调预演.sh 用）
 //   BufferC.Simulator plc  [--plc-port 5501]                                             PLC 仿真注入台（交互/管道脚本）
 //   BufferC.Simulator mcs  [--mcs-host 127.0.0.1] [--mcs-port 5000]                      MCS 仿真终端（交互/管道脚本）
+//   BufferC.Simulator agvc [--agvc-port 5502] [--carrier-id AGV001]                      AGVC 假服务器（queryMachines 应答/记录 push，GET / 网页看收到的请求）
 // 脚本驱动：管道喂命令（# 注释 / sleep ms / EOF 退出），如: echo -e "put 1 A\nstate 1 1\nq" | Simulator plc
 if (args.Length == 0)
 {
@@ -12,6 +15,7 @@ if (args.Length == 0)
     Console.WriteLine("  demo: 全链路预演（联调预演.sh 调用，退出码 0=PASS）");
     Console.WriteLine("  plc : PLC 仿真注入台（put/state/alarm/avail/scan/drop/hang/echo-delay/echo-drop/reg/info/q）");
     Console.WriteLine("  mcs : MCS 仿真终端（q svid/install/remove/wait-ceid/wait-s5/info/drop/q）");
+    Console.WriteLine("  agvc: AGVC 假服务器（queryMachines 应答可配 carrierId；pushDeviceStatusInfo 记录；GET / 网页查看）");
     return 1;
 }
 return args[0] switch
@@ -19,8 +23,11 @@ return args[0] switch
     "demo" => await RunDemoAsync(args),
     "plc" => await RunPlcAsync(args),
     "mcs" => await RunMcsAsync(args),
+    "agvc" => await RunAgvcAsync(args),
     _ => 1,
 };
+
+static string EscapeHtml(string s) => s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
 
 // ---------- demo：全链路自动预演（退出码 0 = PASS，联调预演.sh 依赖） ----------
 static async Task<int> RunDemoAsync(string[] args)
@@ -189,6 +196,125 @@ static async Task<int> RunPlcAsync(string[] args)
         }
     }
     return 0;
+}
+
+// ---------- agvc：AGVC 假服务器（应答 queryMachines + 记录 pushDeviceStatusInfo；GET / 网页展示收到的请求） ----------
+static async Task<int> RunAgvcAsync(string[] args)
+{
+    int port = 5502;
+    string? carrierId = "AGV001";
+    for (int i = 1; i < args.Length; i++)
+    {
+        if (i + 1 >= args.Length) break;
+        if (args[i] == "--agvc-port") port = int.Parse(args[++i]);
+        else if (args[i] == "--carrier-id") { string v = args[++i]; carrierId = v.Length == 0 ? null : v; }
+    }
+
+    var listener = new HttpListener();
+    listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+    listener.Start();
+    var requests = new List<(DateTime Time, string Path, string Body, string RespCode)>();
+    var lockObj = new object();
+    var seq = new long[1];
+
+    Console.WriteLine($"[Agvc] 假 AGVC 服务器已启动 http://127.0.0.1:{port}/（queryMachines 应答 carrierId={(carrierId == null ? "（空 data——模拟无结果）" : carrierId)}）");
+    Console.WriteLine($"[Agvc] 浏览器打开 http://127.0.0.1:{port}/ 查看收到的请求（2s 自刷新）；q 退出 / EOF 结束脚本");
+    _ = Task.Run(() => AgvcAcceptLoopAsync(listener, port, carrierId, requests, lockObj, seq));
+
+    while (true)
+    {
+        var line = Console.ReadLine();
+        if (line == null) break;
+        line = line.Trim();
+        if (line is "q" or "quit") break;
+        if (line == "info")
+        {
+            lock (lockObj) Console.WriteLine($"[Agvc] 已收到请求 {requests.Count} 条");
+        }
+        else if (line.Length > 0 && !line.StartsWith('#'))
+        {
+            Console.WriteLine("[Agvc] 未知命令（q 退出 / info 统计）");
+        }
+    }
+    listener.Stop();
+    return 0;
+}
+
+static async Task AgvcAcceptLoopAsync(HttpListener listener, int port, string? carrierId,
+    List<(DateTime Time, string Path, string Body, string RespCode)> requests, object lockObj, long[] seq)
+{
+    while (listener.IsListening)
+    {
+        HttpListenerContext ctx;
+        try { ctx = await listener.GetContextAsync(); }
+        catch { break; }                                 // Stop() 时退出
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                string body = await new StreamReader(ctx.Request.InputStream).ReadToEndAsync();
+                string path = ctx.Request.Url!.AbsolutePath;
+                string resp;
+                string respCode = "0";
+                if (path == "/")
+                {
+                    // 简易自刷新页面：收到的全部请求（前端化展示「AGVC 侧收到什么」）
+                    lock (lockObj)
+                    {
+                        var rows = string.Join("", requests.Select(r =>
+                            $"<tr><td>{r.Time:HH:mm:ss.fff}</td><td>{EscapeHtml(r.Path)}</td><td class=\"mono\">{EscapeHtml(r.Body)}</td><td>{r.RespCode}</td></tr>").Reverse());
+                        resp = "<!doctype html><html><head><meta charset=\"utf-8\"><title>AGVC 假服务器</title>" +
+                            "<meta http-equiv=\"refresh\" content=\"2\">" +
+                            "<style>body{font-family:monospace;margin:16px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #999;padding:4px 8px;text-align:left;font-size:12px}th{background:#eee}.mono{white-space:pre-wrap;word-break:break-all}</style></head>" +
+                            $"<body><h3>AGVC 假服务器（端口 {port}）— 收到请求 {requests.Count} 条（2s 自刷新）</h3>" +
+                            "<table><tr><th>时间</th><th>接口</th><th>请求体</th><th>应答</th></tr>" + rows + "</table></body></html>";
+                    }
+                    ctx.Response.ContentType = "text/html; charset=utf-8";
+                    var buf = Encoding.UTF8.GetBytes(resp);
+                    ctx.Response.ContentLength64 = buf.Length;
+                    await ctx.Response.OutputStream.WriteAsync(buf);
+                    ctx.Response.OutputStream.Close();
+                    return;
+                }
+                if (path == "/api/hsmsRpc/queryMachines")
+                {
+                    string cmsIndex = "?";
+                    try
+                    {
+                        using var doc = JsonDocument.Parse(body);
+                        cmsIndex = doc.RootElement.GetProperty("cmsIndex").GetString() ?? "?";
+                    }
+                    catch { /* 请求体缺失时按未知 cmsIndex 处理 */ }
+                    long n = Interlocked.Increment(ref seq[0]);
+                    string data = carrierId != null
+                        ? $"[{{\"id\":{n},\"portId\":\"TESTLFT02\",\"dataName\":\"\",\"cmsIndex\":\"{cmsIndex}\",\"carrierId\":\"{carrierId}\",\"machineType\":\"LFT\",\"service\":\"1\",\"present\":\"1\"}}]"
+                        : "[]";
+                    resp = $"{{\"code\":\"0\",\"message\":\"成功\",\"reqCode\":\"REQ{n:X}\",\"interrupt\":false,\"data\":{data}}}";
+                }
+                else if (path == "/api/hsmsRpc/pushDeviceStatusInfo")
+                {
+                    long n = Interlocked.Increment(ref seq[0]);
+                    resp = $"{{\"code\":\"0\",\"data\":\"\",\"interrupt\":false,\"message\":\"成功\",\"reqCode\":\"REQ{n:X}\"}}";
+                }
+                else
+                {
+                    resp = "{\"code\":\"404\",\"message\":\"未知接口\"}";
+                    respCode = "404";
+                }
+                lock (lockObj) requests.Add((DateTime.Now, path, body, respCode));
+                Console.WriteLine($"[Agvc] 收到 {path} {body} → code={respCode}");
+                var respBuf = Encoding.UTF8.GetBytes(resp);
+                ctx.Response.ContentType = "application/json; charset=utf-8";
+                ctx.Response.ContentLength64 = respBuf.Length;
+                await ctx.Response.OutputStream.WriteAsync(respBuf);
+                ctx.Response.OutputStream.Close();
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"[Agvc] 处理请求异常: {e.Message}");
+            }
+        });
+    }
 }
 
 // ---------- mcs：MCS 仿真终端（交互 / 管道脚本） ----------

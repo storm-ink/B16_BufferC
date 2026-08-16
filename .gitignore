@@ -22,3 +22,9 @@ wsl-field-config-backup.json
 
 # 测试结果
 TestResults/
+
+# 离线开发包（安装器+VS layout+NuGet 缓存，约 10GB，不入库）
+offline-kit/
+
+# Office 锁文件（Word/Excel 打开期间的 ~$ 临时文件）
+~$*

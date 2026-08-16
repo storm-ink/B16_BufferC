@@ -11,6 +11,7 @@
   <ItemGroup>
     <Content Include="wwwroot/**" CopyToOutputDirectory="PreserveNewest" />
     <None Include="config.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="config-mcs-test.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <PropertyGroup>
