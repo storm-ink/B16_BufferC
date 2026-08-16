@@ -38,5 +38,5 @@ echo
 echo "==> 已完成。下一步（现场联调）："
 echo "    sudo nano $TARGET/config.json   # 填 15 台 PLC 真实 IP/unitId/byteOrder"
 echo "    sudo systemctl restart bufferc"
-echo "    Web 界面: http://<服务器IP>:8080"
-echo "    防火墙(如需, CentOS 7 firewalld): sudo firewall-cmd --permanent --add-port=5000/tcp --add-port=8080/tcp && sudo firewall-cmd --reload"
+echo "    Web 界面: http://<服务器IP>:7001"
+echo "    防火墙(如需, CentOS 7 firewalld): sudo firewall-cmd --permanent --add-port=5000/tcp --add-port=7001/tcp && sudo firewall-cmd --reload"

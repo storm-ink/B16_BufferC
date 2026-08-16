@@ -254,7 +254,8 @@ public sealed class HsmsServer : IDisposable
                     case 3: HandleS1F3(m); return;
                     case 15:                                     // OFFLINE（CEID 1 状态迁移事件）
                         SendReply(1, 16, SecsEncode.B(0), m);    // OFLACK
-                        SendS6F11(1, 0, null);                   // L3[U4, U2, L0]（MCS 方言）
+                        if (!SendS6F11(1, 0, null))              // L3[U4, U2, L0]（MCS 方言）
+                            Log?.Invoke("HSMS", "事件 CEID 1 发送失败: OFFLINE", LogLevel.Warn);
                         return;
                     case 17:                                     // ONLINE（仅回 ONLACK；状态事件由 RESUME 后的 CEID 103 承担，现场流程）
                         SendReply(1, 18, SecsEncode.B(0), m);    // ONLACK
@@ -302,7 +303,13 @@ public sealed class HsmsServer : IDisposable
                 else values.Add(BuildSvidValue((ushort)it.AsUInt()));
             }
         }
-        catch (Exception e) { Log?.Invoke("HSMS", $"S1F3 解析失败: {e.Message}", LogLevel.Warn); return; }
+        catch (Exception e)
+        {
+            // 解析失败仍回 S1F4（空列表）：MCS 等不到应答会走 T3 超时——回空让它正常收尾并可重新查询
+            Log?.Invoke("HSMS", $"S1F3 解析失败（回空 S1F4）: {e.Message}", LogLevel.Warn);
+            SendReply(1, 4, SecsEncode.L(), m);
+            return;
+        }
         SendReply(1, 4, SecsEncode.L(values.ToArray()), m);
     }
 
@@ -371,7 +378,8 @@ public sealed class HsmsServer : IDisposable
         };
         SendReply(2, 42, SecsEncode.L(SecsEncode.B(hcack), SecsEncode.L()), m);
         // RESUME 应答后发 SCAutoCompleted(103)；SCState 固定 2 不翻转（MCS 不发 PAUSE，现场约定）
-        if (rcmd == "RESUME") SendS6F11(103, 0, null);   // L3[U4, U2, L0]（MCS 方言）
+        if (rcmd == "RESUME" && !SendS6F11(103, 0, null))   // L3[U4, U2, L0]（MCS 方言）
+            Log?.Invoke("HSMS", "事件 CEID 103 发送失败: RESUME", LogLevel.Warn);
     }
 
     private void HandleS5F5(HsmsMessage m)

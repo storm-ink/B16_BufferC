@@ -328,39 +328,40 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
         {
             case EventKind.CarrierInstalled:
                 _inv.SetCarrier(plcIndex, st, p.GetValueOrDefault("CarrierID", ""), p.GetValueOrDefault("CarrierLoc", ""), "AGV");   // 204 自动放入
-                hsms.SendS6F11(204, 2, Rpt2(p));
+                SendEvent(204, 2, Rpt2(p), $"PLC{plcIndex} 站口{st} {p.GetValueOrDefault("CarrierID", "")}");
                 PushStationStatus(plcIndex, st);
                 break;
             case EventKind.CarrierRemoved:
                 _inv.RemoveCarrier(plcIndex, st, out _);
-                hsms.SendS6F11(203, 2, Rpt2(p));   // RPT2: CarrierID + HandoffType
+                SendEvent(203, 2, Rpt2(p), $"PLC{plcIndex} 站口{st} {p.GetValueOrDefault("CarrierID", "")}");   // RPT2: CarrierID + HandoffType
                 PushStationStatus(plcIndex, st);
                 break;
             case EventKind.CarrierInstallCompleted:
                 _inv.SetCarrier(plcIndex, st, p.GetValueOrDefault("CarrierID", ""), p.GetValueOrDefault("CarrierLoc", ""), "MANUAL");   // 201 手动（含扫码）
-                hsms.SendS6F11(201, 2, Rpt2(p));
+                SendEvent(201, 2, Rpt2(p), $"PLC{plcIndex} 站口{st} {p.GetValueOrDefault("CarrierID", "")}");
                 PushStationStatus(plcIndex, st, p.GetValueOrDefault("CarrierID", ""));
                 break;
             case EventKind.CarrierRemoveCompleted:
                 _inv.RemoveCarrier(plcIndex, st, out _);
-                hsms.SendS6F11(202, 2, Rpt2(p));
+                SendEvent(202, 2, Rpt2(p), $"PLC{plcIndex} 站口{st} {p.GetValueOrDefault("CarrierID", "")}");
                 break;
             case EventKind.CarrierIdRead:
                 CancelAgvcArrivalTimer(plcIndex, st);   // 扫码路径已写入 ID，取消「找 AGVC 要 ID」等待计时
-                hsms.SendS6F11(501, 5, SecsEncode.L(
+                SendEvent(501, 5, SecsEncode.L(
                     SecsEncode.A(p.GetValueOrDefault("CarrierID", "")),
                     SecsEncode.A(p.GetValueOrDefault("CarrierLoc", "")),
-                    SecsEncode.U2(ushort.Parse(p.GetValueOrDefault("IDReadStatus", "0")))));
+                    SecsEncode.U2(ushort.Parse(p.GetValueOrDefault("IDReadStatus", "0")))),
+                    $"PLC{plcIndex} 站口{st} {p.GetValueOrDefault("CarrierID", "")}");
                 PushStationStatus(plcIndex, st, p.GetValueOrDefault("CarrierID", ""));
                 break;
             case EventKind.UnitInService:
                 _inv.UpdateUnit(plcIndex, st, 0);
-                hsms.SendS6F11(301, 3, Rpt3(p));
+                SendEvent(301, 3, Rpt3(p), $"PLC{plcIndex} 站口{st} 在服");
                 PushStationStatus(plcIndex, st);
                 break;
             case EventKind.UnitOutOfService:
                 _inv.UpdateUnit(plcIndex, st, 1);
-                hsms.SendS6F11(302, 3, Rpt3(p));
+                SendEvent(302, 3, Rpt3(p), $"PLC{plcIndex} 站口{st} 停服");
                 PushStationStatus(plcIndex, st);
                 break;
             case EventKind.AlarmSet:
@@ -372,13 +373,13 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
                 Audit("告警", $"S5F1 SET {alid} {text}");
                 if (!hsms.SendS5F1(true, alid, text))
                     Log("告警", $"S5F1 SET {alid} 发送失败（MCS 未连接）", LogLevel.Error);
-                hsms.SendS6F11(102, 1, Rpt1(p));
+                SendEvent(102, 1, Rpt1(p), $"PLC{plcIndex} 告警 {alid}");
                 _alarmHistory.Add(new AlarmHistoryEntry(DateTime.Now, unit, alid, text, "SET"));
                 _inv.AlarmSet(alid, unit, text);
                 break;
             }
             case EventKind.UnitAlarmSet:
-                hsms.SendS6F11(402, 4, Rpt4(p));
+                SendEvent(402, 4, Rpt4(p), $"PLC{plcIndex} 站口{st} 告警 {p.GetValueOrDefault("AlarmId", "")}");
                 break;
             case EventKind.AlarmCleared:
             {
@@ -389,15 +390,23 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
                 Audit("告警", $"S5F1 CLEAR {alid} {text}");
                 if (!hsms.SendS5F1(false, alid, text))
                     Log("告警", $"S5F1 CLEAR {alid} 发送失败（MCS 未连接）", LogLevel.Error);
-                hsms.SendS6F11(101, 1, Rpt1(p));
+                SendEvent(101, 1, Rpt1(p), $"PLC{plcIndex} 告警 {alid}");
                 _alarmHistory.Add(new AlarmHistoryEntry(DateTime.Now, unit, alid, text, "CLEAR"));
                 _inv.AlarmClear(alid);
                 break;
             }
             case EventKind.UnitAlarmCleared:
-                hsms.SendS6F11(401, 4, Rpt4(p));
+                SendEvent(401, 4, Rpt4(p), $"PLC{plcIndex} 站口{st} 告警 {p.GetValueOrDefault("AlarmId", "")}");
                 break;
         }
+    }
+
+    /// <summary>S6F11 事件发送（带失败上下文日志：MCS 未连接时事件丢失可见。
+    /// 断线不补报为既定决策（重连后 S1F3 全量同步）——此处只让失败留痕，不改变不补报。）</summary>
+    private void SendEvent(ushort ceid, ushort rptId, byte[] body, string desc)
+    {
+        if (_hsms == null || !_hsms.SendS6F11(ceid, rptId, body))
+            Log("HSMS", $"事件 CEID {ceid} 发送失败（MCS 未连接）: {desc}", LogLevel.Warn);
     }
 
     // ---------- RPT 组装 ----------
@@ -465,7 +474,10 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
             return false;
         }
         Audit("CIM", $"CIM 状态事件: {(online ? "ONLINEREMOTE(3)" : "OFFLINE(1)")}");
-        return _hsms.SendS6F11(online ? (ushort)3 : (ushort)1, 0, null);   // L3[U4, U2, L0]（MCS 方言）
+        bool sent = _hsms.SendS6F11(online ? (ushort)3 : (ushort)1, 0, null);   // L3[U4, U2, L0]（MCS 方言）
+        if (!sent)
+            Log("HSMS", $"事件 CEID {(online ? 3 : 1)} 发送失败（MCS 未连接）: CIM 状态事件", LogLevel.Warn);
+        return sent;
     }
 
     /// <summary>
@@ -533,14 +545,16 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
                             CancelAgvcArrivalTimer(row.PlcIndex, st);   // 命令已写入 ID，取消「找 AGVC 要 ID」计时
                             _inv.SetCarrier(row.PlcIndex, st, row.CmdCarrierId, locNorm, row.CmdSource);
                             _inv.CompleteCommand(row.PlcIndex, st, poller.Channel.LastSeq);
-                            _hsms?.SendS6F11(201, 2, SecsEncode.L(SecsEncode.A(row.CmdCarrierId), SecsEncode.A(locNorm)));
+                            SendEvent(201, 2, SecsEncode.L(SecsEncode.A(row.CmdCarrierId), SecsEncode.A(locNorm)),
+                                $"PLC{row.PlcIndex} 站口{st} {row.CmdCarrierId}");
                             PushStationStatus(row.PlcIndex, st, row.CmdCarrierId);
                         }
                         else
                         {
                             _inv.RemoveCarrier(row.PlcIndex, st, out _);
                             _inv.CompleteCommand(row.PlcIndex, st, poller.Channel.LastSeq);
-                            _hsms?.SendS6F11(202, 2, SecsEncode.L(SecsEncode.A(row.CmdCarrierId), SecsEncode.A(locNorm)));
+                            SendEvent(202, 2, SecsEncode.L(SecsEncode.A(row.CmdCarrierId), SecsEncode.A(locNorm)),
+                                $"PLC{row.PlcIndex} 站口{st} {row.CmdCarrierId}");
                         }
                         // 9001 清除口径（2026-08-17 用户确认）：下条命令成功即自动清（与 PLC 告警「恢复即消」语义一致；失败事实留痕审计日志/台账）
                         if (_inv.AlarmClear(AlarmCmdFailed))
@@ -918,6 +932,9 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
             return false;
         }
         Audit("对账", "发送 InventoryUpdateRequest（CEID 502）");
-        return _hsms.SendS6F11(502, 0, null);   // L3[U4, U2, L0]（MCS 方言）
+        bool sent = _hsms.SendS6F11(502, 0, null);   // L3[U4, U2, L0]（MCS 方言）
+        if (!sent)
+            Log("HSMS", "事件 CEID 502 发送失败（MCS 未连接）: InventoryUpdateRequest", LogLevel.Warn);
+        return sent;
     }
 }

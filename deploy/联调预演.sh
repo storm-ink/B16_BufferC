@@ -34,7 +34,7 @@ cfg = {
     "plcs": [{"index": 1, "ip": gw, "port": port, "unitId": 1, "byteOrder": "high", "timeoutMs": 3000, "lastSeq": 0}],
     "hsms": {"listenPort": 5000, "mdln": "BUFFERC", "softRev": "0.1.0", "t3Ms": 45000},
     "pollIntervalMs": 500, "echoTimeoutMs": 5000, "echoRetryCount": 1,
-    "logFile": "demo.log", "dbPath": "demo.db", "webPort": 8080,
+    "logFile": "demo.log", "dbPath": "demo.db", "webPort": 7001,
 }
 json.dump(cfg, open(repo + "/publish/simulator/demo-config.json", "w"), indent=2)
 PYEOF
