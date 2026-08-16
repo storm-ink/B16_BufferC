@@ -74,6 +74,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
 
         // 重启恢复（未完成命令标记失败）
         RecoverStaleCommands();
+        SeedHistoryFromDb();   // B3：历史回填环形缓冲（Web 面板重启后可查）
 
         // AGVC 集成（方向1 出站）：baseUrl 配置后订阅 AGV 放入完成回调（2→1）
         if (!string.IsNullOrWhiteSpace(_cfg.Agvc.BaseUrl))
@@ -95,6 +96,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
         _agvcArrivalTimers.Clear();
         _agvc?.Dispose();
         _hsms?.Dispose();
+        _inv.Dispose();
         lock (_logLock)
         {
             _logWriter?.Dispose();
@@ -297,7 +299,9 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
     {
         foreach (var ev in events)
         {
-            _events.Add(new EventEntry(DateTime.Now, (ushort)ev.Kind, DescribeEvent(ev)));
+            var now = DateTime.Now;
+            _events.Add(new EventEntry(now, (ushort)ev.Kind, DescribeEvent(ev)));
+            _inv.AddEventHistory(now, (ushort)ev.Kind, DescribeEvent(ev));   // B3：事件历史持久化
             HandleEvent(plcIndex, ev);
         }
     }
@@ -375,6 +379,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
                     Log("告警", $"S5F1 SET {alid} 发送失败（MCS 未连接）", LogLevel.Error);
                 SendEvent(102, 1, Rpt1(p), $"PLC{plcIndex} 告警 {alid}");
                 _alarmHistory.Add(new AlarmHistoryEntry(DateTime.Now, unit, alid, text, "SET"));
+                _inv.AddAlarmHistory(DateTime.Now, unit, alid, text, "SET");   // B3：告警历史持久化
                 _inv.AlarmSet(alid, unit, text);
                 break;
             }
@@ -392,6 +397,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
                     Log("告警", $"S5F1 CLEAR {alid} 发送失败（MCS 未连接）", LogLevel.Error);
                 SendEvent(101, 1, Rpt1(p), $"PLC{plcIndex} 告警 {alid}");
                 _alarmHistory.Add(new AlarmHistoryEntry(DateTime.Now, unit, alid, text, "CLEAR"));
+                _inv.AddAlarmHistory(DateTime.Now, unit, alid, text, "CLEAR");   // B3：告警历史持久化
                 _inv.AlarmClear(alid);
                 break;
             }
@@ -451,11 +457,13 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
 
     private void RecordFailedCommand(string source, string cmd, string carrierId, string loc)
     {
+        var now = DateTime.Now;
         lock (_failLock)
         {
-            _failedCommands.Add(new FailedCommand(source, cmd, carrierId, loc, DateTime.Now));
+            _failedCommands.Add(new FailedCommand(source, cmd, carrierId, loc, now));
             if (_failedCommands.Count > 100) _failedCommands.RemoveAt(0);
         }
+        _inv.AddFailedHistory(now, source, cmd, carrierId, loc);   // B3：悬空命令持久化（重启后 Web 面板仍可查）
         string tag = TryParseLoc(loc, out int plc, out int st) ? $"PLC{plc} 站口{st}" : loc;
         Log("CMD", $"悬空命令: {source} {cmd} {carrierId} {loc}（HCACK=4 已确认，执行失败）", LogLevel.Error);
         Audit("CMD", $"悬空命令: {source} {cmd} {carrierId} {loc}（HCACK=4 已确认，执行失败）");
@@ -525,6 +533,22 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
                     if (poller == null || !poller.IsConnected) continue;   // PLC 断线：保持待执行，重连后继续
                     var st = row.Station;
                     string cmdName = row.CmdType == RegisterMap.CmdWrite ? "CarrierDataInstall" : "CarrierDataRemove";
+                    if (row.CmdState == 4)
+                    {
+                        // 恢复待校验（B4 防误清）：比对站口当前载具 ID——货被换过则标记失败人工介入；一致（或站口已空）→ 转 1 正常执行
+                        var snap = poller.Snapshot;
+                        if (snap == null) continue;   // 快照未就绪，下轮再校验
+                        string curId = snap.CarrierId[st - 1];
+                        if (curId != "" && curId != row.CmdCarrierId)
+                        {
+                            _inv.FailCommand(row.PlcIndex, st);
+                            RecordFailedCommand(row.CmdSource, cmdName, row.CmdCarrierId, EventEngine.Loc(row.PlcIndex, st));
+                            Audit("CMD", $"恢复校验不通过（站口当前载具 {curId} ≠ 命令 {row.CmdCarrierId}，货已更换需人工介入）: PLC{row.PlcIndex} 站口{st}");
+                            continue;
+                        }
+                        _inv.RequeueCommand(row.PlcIndex, st);
+                        Audit("CMD", $"恢复校验通过: PLC{row.PlcIndex} 站口{st} {cmdName} {row.CmdCarrierId}");
+                    }
                     Audit("CMD", $"执行站口命令: PLC{row.PlcIndex} 站口{st} {cmdName} {row.CmdCarrierId}");
                     _inv.MarkCommandRunning(row.PlcIndex, st, 0);
                     var sw = Stopwatch.StartNew();
@@ -537,6 +561,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
                     catch (Exception e) { LogException("CMD", $"PLC{row.PlcIndex} 站口{st} 命令异常", e, LogLevel.Error); ok = false; }
                     sw.Stop();
                     _cmds.Add(new CmdEntry(DateTime.Now, row.CmdSource, st, cmdName, ok, sw.ElapsedMilliseconds, row.CmdCarrierId));
+                    _inv.AddCommandHistory(DateTime.Now, row.CmdSource, row.PlcIndex, st, cmdName, ok, sw.ElapsedMilliseconds, row.CmdCarrierId);   // B3：命令历史持久化
                     if (ok)
                     {
                         var locNorm = EventEngine.Loc(row.PlcIndex, st);
@@ -560,6 +585,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
                         if (_inv.AlarmClear(AlarmCmdFailed))
                         {
                             _alarmHistory.Add(new AlarmHistoryEntry(DateTime.Now, "SYSTEM", AlarmCmdFailed, "命令执行失败（悬空命令）", "CLEAR"));
+                            _inv.AddAlarmHistory(DateTime.Now, "SYSTEM", AlarmCmdFailed, "命令执行失败（悬空命令）", "CLEAR");   // B3：告警历史持久化
                             Audit("告警", $"S5F1 CLEAR {AlarmCmdFailed}（命令恢复成功自动清除）");
                             if (_hsms != null && !_hsms.SendS5F1(false, AlarmCmdFailed, "命令执行失败（悬空命令）"))
                                 Log("告警", $"S5F1 CLEAR {AlarmCmdFailed} 发送失败（MCS 未连接）", LogLevel.Error);
@@ -579,14 +605,23 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
         }
     }
 
-    /// <summary>重启恢复：未完成命令标记失败 + 9001 告警 + 日志（保守策略；重执行为后续选项）</summary>
+    /// <summary>B3：启动回填——历史记录从 SQLite 载入环形缓冲（Web 面板重启后可查）</summary>
+    private void SeedHistoryFromDb()
+    {
+        foreach (var e in _inv.LoadEvents(100)) _events.Add(new EventEntry(e.Time, e.Ceid, e.Description));
+        foreach (var c in _inv.LoadCommands(100)) _cmds.Add(new CmdEntry(c.Time, c.Source, c.Station, c.Cmd, c.Ok, c.ElapsedMs, c.CarrierId));
+        foreach (var a in _inv.LoadAlarms(100)) _alarmHistory.Add(new AlarmHistoryEntry(a.Time, a.UnitId, a.AlarmId, a.Text, a.Action));
+        lock (_failLock)
+            foreach (var f in _inv.LoadFailed(100)) _failedCommands.Add(new FailedCommand(f.Source, f.Cmd, f.CarrierId, f.Loc, f.Time));
+    }
+
+    /// <summary>重启恢复（B4 用户确认 2026-08-17：全部重执行）：
+    /// 未完成命令 → 4=恢复待校验（worker 比对站口当前载具 ID 防误清后执行；不再直接 9001）</summary>
     private void RecoverStaleCommands()
     {
-        foreach (var row in _inv.FailStaleCommands())
+        foreach (var row in _inv.RequeueStaleCommands())
         {
-            Audit("CMD", $"重启恢复: PLC{row.PlcIndex} 站口{row.Station} 未完成命令标记失败 {row.CmdType} {row.CmdCarrierId} @ {row.UnitId}");
-            RecordFailedCommand(row.CmdSource, row.CmdType == RegisterMap.CmdWrite ? "CarrierDataInstall" : "CarrierDataRemove",
-                row.CmdCarrierId, row.UnitId);
+            Audit("CMD", $"重启恢复: PLC{row.PlcIndex} 站口{row.Station} 未完成命令重执行（恢复待校验） {row.CmdType} {row.CmdCarrierId} @ {row.UnitId}");
         }
     }
 
@@ -822,6 +857,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
         1 => "待执行",
         2 => "执行中",
         3 => "失败",
+        4 => "恢复校验",
         _ => "—",
     };
 
@@ -886,7 +922,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
                             pairs.Add((pair.Children[0].AsString().Trim(), pair.Children[1].AsString().Trim()));
                 }
             }
-            catch { }
+            catch (Exception ex) { Log("对账", $"条目解析失败（跳过）: {ex.Message}", LogLevel.Debug); }
             if (pairs.Count == 0) continue;
             if (pairs.Count > 1)
             {
@@ -918,8 +954,17 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
             updated++;
         }
         foreach (var c in _inv.Carriers)
-            if (!seen.Contains(c.CarrierId))
+        {
+            if (seen.Contains(c.CarrierId)) continue;
+            if (_cfg.ReconcileStrict)   // 严格模式：MCS 列表即真理，未包含的本地条目删除
+            {
+                if (TryParseLoc(c.CarrierLoc, out int dPlc, out int dSt))
+                    _inv.RemoveCarrier(dPlc, dSt, out _);
+                Audit("对账", $"严格模式删除: {c.CarrierId} @ {c.CarrierLoc}（MCS 列表未包含）");
+            }
+            else
                 Audit("对账", $"差异: 本地台账有 {c.CarrierId} @ {c.CarrierLoc}，MCS 列表未包含（未删除）");
+        }
         Audit("对账", $"InventoryDataSend 对账完成: 共 {rows.Count} 条，更新 {updated}，一致 {unchanged}，跳过 {skipped}");
     }
 

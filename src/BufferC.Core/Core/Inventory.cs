@@ -1,3 +1,4 @@
+using System.Globalization;
 using BufferC.Core.Modbus;
 using BufferC.Core.Secs;
 using Microsoft.Data.Sqlite;
@@ -11,7 +12,7 @@ namespace BufferC.Core.Core;
 /// dbPath 为空 = 纯内存；提供 dbPath 时同步持久化 SQLite（WAL，变化才写）。
 /// 所有写走 _lock 串行化；取走后保留 carrier_id/install_source（最近一条，再安装覆盖）。
 /// </summary>
-public sealed class Inventory
+public sealed class Inventory : IDisposable
 {
     /// <summary>站口主表行。state=0~5 站口状态（0空/1有货/2正放/3正取/4故障/5人工有货）；取走保留 carrier_id/source</summary>
     public sealed record StationRow(
@@ -25,6 +26,8 @@ public sealed class Inventory
     private readonly Dictionary<string, string> _byCarrier = new();      // carrierId → key（只在库）
     private readonly List<AlarmStatus> _alarms = new();                  // 告警表内存镜像（清除即删）
     private readonly object _lock = new();
+    private readonly object _dbLock = new();                             // 单例连接：所有 SQL 命令串行化（锁序恒为 _lock → _dbLock，不反向）
+    private SqliteConnection? _conn;
     private readonly Action<string, string, LogLevel> _log;              // 注入日志（默认 Console 回退，单测 new 不破）
     private int _writeFailStreak;                                        // SQLite 写失败节流计数
     private DateTime _lastFailLogAt = DateTime.MinValue;
@@ -254,10 +257,10 @@ public sealed class Inventory
         }
     }
 
-    /// <summary>待执行命令行（后台工作线程扫描；断线保持待执行）</summary>
+    /// <summary>待执行命令行（后台工作线程扫描；断线保持待执行；4=恢复待校验同样入队，worker 校验通过后转 1 执行）</summary>
     public IReadOnlyList<StationRow> PendingCommands
     {
-        get { lock (_lock) return _stations.Values.Where(r => r.CmdState == 1).ToList(); }
+        get { lock (_lock) return _stations.Values.Where(r => r.CmdState is 1 or 4).ToList(); }
     }
 
     /// <summary>命令开始执行：cmd_state=2（编号在 CommandChannel 内部才分配，此处先写 0；执行结束后成功经 CompleteCommand、失败经 WriteCommandSeq 回写）</summary>
@@ -308,8 +311,9 @@ public sealed class Inventory
         }
     }
 
-    /// <summary>重启恢复：未完成命令（待执行/执行中）→ 标记失败并返回列表（供 9001 告警与日志）</summary>
-    public IReadOnlyList<StationRow> FailStaleCommands()
+    /// <summary>重启恢复（B4 策略 2026-08-17 用户确认：全部重执行）：未完成命令（待执行/执行中）→ 4=恢复待校验
+    /// （worker 校验站口当前载具 ID 与命令一致后转 1 执行；不一致标记失败人工介入），返回列表供日志。</summary>
+    public IReadOnlyList<StationRow> RequeueStaleCommands()
     {
         lock (_lock)
         {
@@ -317,11 +321,136 @@ public sealed class Inventory
             foreach (var row in stale)
             {
                 var key = Key(row.PlcIndex, row.Station);
-                _stations[key] = row with { CmdState = 3 };
-                Exec("UPDATE stations SET cmd_state=3 WHERE station_key=$k", ("$k", key));
+                _stations[key] = row with { CmdState = 4 };
+                Exec("UPDATE stations SET cmd_state=4 WHERE station_key=$k", ("$k", key));
             }
             return stale;
         }
+    }
+
+    /// <summary>恢复校验通过：4 → 1（交给正常执行路径）</summary>
+    public void RequeueCommand(int plcIndex, int station)
+    {
+        var key = Key(plcIndex, station);
+        lock (_lock)
+        {
+            if (!_stations.TryGetValue(key, out var row)) return;
+            _stations[key] = row with { CmdState = 1 };
+            Exec("UPDATE stations SET cmd_state=1 WHERE station_key=$k", ("$k", key));
+        }
+    }
+
+    // ---------- 历史持久化（B3：事件/命令/告警/悬空命令重启不丢；每表只保留最近 HistoryCap 条） ----------
+    private const int HistoryCap = 2000;
+
+    public sealed record HistoryEvent(DateTime Time, ushort Ceid, string Description);
+    public sealed record HistoryCommand(DateTime Time, string Source, int Plc, int Station, string Cmd, bool Ok, long ElapsedMs, string CarrierId);
+    public sealed record HistoryAlarm(DateTime Time, string UnitId, uint AlarmId, string Text, string Action);
+    public sealed record HistoryFailed(DateTime Time, string Source, string Cmd, string CarrierId, string Loc);
+
+    public void AddEventHistory(DateTime t, ushort ceid, string desc) =>
+        Exec("INSERT INTO history_events(time, ceid, description) VALUES($t,$c,$d); " +
+             $"DELETE FROM history_events WHERE id <= (SELECT MAX(id) FROM history_events) - {HistoryCap}",
+             ("$t", NowOf(t)), ("$c", (int)ceid), ("$d", desc));
+
+    public void AddCommandHistory(DateTime t, string source, int plc, int station, string cmd, bool ok, long elapsedMs, string carrierId) =>
+        Exec("INSERT INTO history_commands(time, source, plc, station, cmd, ok, elapsed_ms, carrier_id) VALUES($t,$s,$p,$st,$c,$o,$e,$id); " +
+             $"DELETE FROM history_commands WHERE id <= (SELECT MAX(id) FROM history_commands) - {HistoryCap}",
+             ("$t", NowOf(t)), ("$s", source), ("$p", plc), ("$st", station), ("$c", cmd), ("$o", ok ? 1 : 0), ("$e", elapsedMs), ("$id", carrierId));
+
+    public void AddAlarmHistory(DateTime t, string unitId, uint alarmId, string text, string action) =>
+        Exec("INSERT INTO history_alarms(time, unit_id, alarm_id, text, action) VALUES($t,$u,$a,$x,$act); " +
+             $"DELETE FROM history_alarms WHERE id <= (SELECT MAX(id) FROM history_alarms) - {HistoryCap}",
+             ("$t", NowOf(t)), ("$u", unitId), ("$a", (long)alarmId), ("$x", text), ("$act", action));
+
+    public void AddFailedHistory(DateTime t, string source, string cmd, string carrierId, string loc) =>
+        Exec("INSERT INTO history_failed(time, source, cmd, carrier_id, loc) VALUES($t,$s,$c,$id,$l); " +
+             $"DELETE FROM history_failed WHERE id <= (SELECT MAX(id) FROM history_failed) - {HistoryCap}",
+             ("$t", NowOf(t)), ("$s", source), ("$c", cmd), ("$id", carrierId), ("$l", loc));
+
+    private static string NowOf(DateTime t) => t.ToString("yyyyMMddHHmmssfff");
+    private static DateTime ParseTime(string s) =>
+        DateTime.TryParseExact(s, "yyyyMMddHHmmssfff", CultureInfo.InvariantCulture, DateTimeStyles.None, out var t) ? t : DateTime.MinValue;
+
+    public List<HistoryEvent> LoadEvents(int tail)
+    {
+        var rows = new List<HistoryEvent>();
+        if (_dbPath == null) return rows;
+        try
+        {
+            lock (_dbLock)
+            {
+                using var cmd = Conn().CreateCommand();
+                cmd.CommandText = "SELECT time, ceid, description FROM history_events ORDER BY id DESC LIMIT $n";
+                cmd.Parameters.AddWithValue("$n", tail);
+                using var r = cmd.ExecuteReader();
+                while (r.Read()) rows.Add(new HistoryEvent(ParseTime(DStr(r, 0)), (ushort)r.GetInt64(1), DStr(r, 2)));
+                rows.Reverse();
+            }
+        }
+        catch (Exception e) { _log("Inventory", $"历史事件加载失败: {e.Message}", LogLevel.Warn); }
+        return rows;
+    }
+
+    public List<HistoryCommand> LoadCommands(int tail)
+    {
+        var rows = new List<HistoryCommand>();
+        if (_dbPath == null) return rows;
+        try
+        {
+            lock (_dbLock)
+            {
+                using var cmd = Conn().CreateCommand();
+                cmd.CommandText = "SELECT time, source, plc, station, cmd, ok, elapsed_ms, carrier_id FROM history_commands ORDER BY id DESC LIMIT $n";
+                cmd.Parameters.AddWithValue("$n", tail);
+                using var r = cmd.ExecuteReader();
+                while (r.Read()) rows.Add(new HistoryCommand(ParseTime(DStr(r, 0)), DStr(r, 1), r.GetInt32(2), r.GetInt32(3),
+                    DStr(r, 4), r.GetInt64(5) == 1, r.GetInt64(6), DStr(r, 7)));
+                rows.Reverse();
+            }
+        }
+        catch (Exception e) { _log("Inventory", $"历史命令加载失败: {e.Message}", LogLevel.Warn); }
+        return rows;
+    }
+
+    public List<HistoryAlarm> LoadAlarms(int tail)
+    {
+        var rows = new List<HistoryAlarm>();
+        if (_dbPath == null) return rows;
+        try
+        {
+            lock (_dbLock)
+            {
+                using var cmd = Conn().CreateCommand();
+                cmd.CommandText = "SELECT time, unit_id, alarm_id, text, action FROM history_alarms ORDER BY id DESC LIMIT $n";
+                cmd.Parameters.AddWithValue("$n", tail);
+                using var r = cmd.ExecuteReader();
+                while (r.Read()) rows.Add(new HistoryAlarm(ParseTime(DStr(r, 0)), DStr(r, 1), (uint)r.GetInt64(2), DStr(r, 3), DStr(r, 4)));
+                rows.Reverse();
+            }
+        }
+        catch (Exception e) { _log("Inventory", $"历史告警加载失败: {e.Message}", LogLevel.Warn); }
+        return rows;
+    }
+
+    public List<HistoryFailed> LoadFailed(int tail)
+    {
+        var rows = new List<HistoryFailed>();
+        if (_dbPath == null) return rows;
+        try
+        {
+            lock (_dbLock)
+            {
+                using var cmd = Conn().CreateCommand();
+                cmd.CommandText = "SELECT time, source, cmd, carrier_id, loc FROM history_failed ORDER BY id DESC LIMIT $n";
+                cmd.Parameters.AddWithValue("$n", tail);
+                using var r = cmd.ExecuteReader();
+                while (r.Read()) rows.Add(new HistoryFailed(ParseTime(DStr(r, 0)), DStr(r, 1), DStr(r, 2), DStr(r, 3), DStr(r, 4)));
+                rows.Reverse();
+            }
+        }
+        catch (Exception e) { _log("Inventory", $"悬空命令历史加载失败: {e.Message}", LogLevel.Warn); }
+        return rows;
     }
 
     // ---------- 设备状态（SVID 14/21） ----------
@@ -345,51 +474,58 @@ public sealed class Inventory
     {
         try
         {
-            using var conn = Open();
-            using (var cmd = conn.CreateCommand())
+            lock (_dbLock)
             {
-                cmd.CommandText = """
-                    CREATE TABLE IF NOT EXISTS stations(
-                        station_key TEXT PRIMARY KEY, plc INTEGER, station INTEGER, unit_id TEXT,
-                        state INTEGER, carrier_id TEXT, install_source TEXT DEFAULT '',
-                        avail INTEGER, alarm_code INTEGER, updated_at TEXT DEFAULT '',
-                        cmd_state INTEGER DEFAULT 0, cmd_type INTEGER DEFAULT 0, cmd_carrier_id TEXT DEFAULT '',
-                        cmd_time TEXT DEFAULT '', cmd_seq INTEGER DEFAULT 0, cmd_source TEXT DEFAULT '');
-                    CREATE TABLE IF NOT EXISTS alarms(alarm_id INTEGER PRIMARY KEY, unit_id TEXT, text TEXT);
-                    CREATE TABLE IF NOT EXISTS device_state(id INTEGER PRIMARY KEY, control_state INTEGER, sc_state INTEGER);
-                    """;
-                cmd.ExecuteNonQuery();
-            }
-            using (var cmd = conn.CreateCommand())
-            {
-                cmd.CommandText = "SELECT station_key, plc, station, unit_id, state, carrier_id, install_source, avail, alarm_code, updated_at, cmd_state, cmd_type, cmd_carrier_id, cmd_time, cmd_seq, cmd_source FROM stations";
-                using var r = cmd.ExecuteReader();
-                while (r.Read())
+                var conn = Conn();
+                using (var cmd = conn.CreateCommand())
                 {
-                    var key = r.GetString(0);
-                    var row = new StationRow(r.GetInt32(1), r.GetInt32(2), r.GetString(3),
-                        (ushort)r.GetInt32(4), DStr(r, 5), DStr(r, 6), DStr(r, 9),
-                        (ushort)r.GetInt32(7), (ushort)r.GetInt32(8),
-                        (ushort)r.GetInt32(10), (ushort)r.GetInt32(11), DStr(r, 12), DStr(r, 13), (uint)r.GetInt64(14), DStr(r, 15));
-                    _stations[key] = row;
-                    if ((row.State is RegisterMap.StHasCarrier or RegisterMap.StManualCarrier) && row.CarrierId.Length > 0)
-                        _byCarrier[row.CarrierId] = key;
+                    cmd.CommandText = """
+                        CREATE TABLE IF NOT EXISTS stations(
+                            station_key TEXT PRIMARY KEY, plc INTEGER, station INTEGER, unit_id TEXT,
+                            state INTEGER, carrier_id TEXT, install_source TEXT DEFAULT '',
+                            avail INTEGER, alarm_code INTEGER, updated_at TEXT DEFAULT '',
+                            cmd_state INTEGER DEFAULT 0, cmd_type INTEGER DEFAULT 0, cmd_carrier_id TEXT DEFAULT '',
+                            cmd_time TEXT DEFAULT '', cmd_seq INTEGER DEFAULT 0, cmd_source TEXT DEFAULT '');
+                        CREATE TABLE IF NOT EXISTS alarms(alarm_id INTEGER PRIMARY KEY, unit_id TEXT, text TEXT);
+                        CREATE TABLE IF NOT EXISTS device_state(id INTEGER PRIMARY KEY, control_state INTEGER, sc_state INTEGER);
+                        CREATE TABLE IF NOT EXISTS history_events(id INTEGER PRIMARY KEY AUTOINCREMENT, time TEXT, ceid INTEGER, description TEXT);
+                        CREATE TABLE IF NOT EXISTS history_commands(id INTEGER PRIMARY KEY AUTOINCREMENT, time TEXT, source TEXT, plc INTEGER, station INTEGER, cmd TEXT, ok INTEGER, elapsed_ms INTEGER, carrier_id TEXT);
+                        CREATE TABLE IF NOT EXISTS history_alarms(id INTEGER PRIMARY KEY AUTOINCREMENT, time TEXT, unit_id TEXT, alarm_id INTEGER, text TEXT, action TEXT);
+                        CREATE TABLE IF NOT EXISTS history_failed(id INTEGER PRIMARY KEY AUTOINCREMENT, time TEXT, source TEXT, cmd TEXT, carrier_id TEXT, loc TEXT);
+                        """;
+                    cmd.ExecuteNonQuery();
                 }
-            }
-            using (var cmd = conn.CreateCommand())
-            {
-                cmd.CommandText = "SELECT alarm_id, unit_id, text FROM alarms";
-                using var r = cmd.ExecuteReader();
-                while (r.Read()) _alarms.Add(new AlarmStatus(DStr(r, 1), (uint)r.GetInt64(0), DStr(r, 2)));
-            }
-            using (var cmd = conn.CreateCommand())
-            {
-                cmd.CommandText = "SELECT control_state, sc_state FROM device_state WHERE id=1";
-                using var r = cmd.ExecuteReader();
-                if (r.Read())
+                using (var cmd = conn.CreateCommand())
                 {
-                    ControlState = (ushort)r.GetInt32(0);
-                    ScState = (ushort)r.GetInt32(1);
+                    cmd.CommandText = "SELECT station_key, plc, station, unit_id, state, carrier_id, install_source, avail, alarm_code, updated_at, cmd_state, cmd_type, cmd_carrier_id, cmd_time, cmd_seq, cmd_source FROM stations";
+                    using var r = cmd.ExecuteReader();
+                    while (r.Read())
+                    {
+                        var key = r.GetString(0);
+                        var row = new StationRow(r.GetInt32(1), r.GetInt32(2), r.GetString(3),
+                            (ushort)r.GetInt32(4), DStr(r, 5), DStr(r, 6), DStr(r, 9),
+                            (ushort)r.GetInt32(7), (ushort)r.GetInt32(8),
+                            (ushort)r.GetInt32(10), (ushort)r.GetInt32(11), DStr(r, 12), DStr(r, 13), (uint)r.GetInt64(14), DStr(r, 15));
+                        _stations[key] = row;
+                        if ((row.State is RegisterMap.StHasCarrier or RegisterMap.StManualCarrier) && row.CarrierId.Length > 0)
+                            _byCarrier[row.CarrierId] = key;
+                    }
+                }
+                using (var cmd = conn.CreateCommand())
+                {
+                    cmd.CommandText = "SELECT alarm_id, unit_id, text FROM alarms";
+                    using var r = cmd.ExecuteReader();
+                    while (r.Read()) _alarms.Add(new AlarmStatus(DStr(r, 1), (uint)r.GetInt64(0), DStr(r, 2)));
+                }
+                using (var cmd = conn.CreateCommand())
+                {
+                    cmd.CommandText = "SELECT control_state, sc_state FROM device_state WHERE id=1";
+                    using var r = cmd.ExecuteReader();
+                    if (r.Read())
+                    {
+                        ControlState = (ushort)r.GetInt32(0);
+                        ScState = (ushort)r.GetInt32(1);
+                    }
                 }
             }
         }
@@ -406,16 +542,18 @@ public sealed class Inventory
         if (_dbPath == null) return;
         try
         {
-            using var conn = Open();
-            using var cmd = conn.CreateCommand();
-            cmd.CommandText = sql;
-            foreach (var (name, value) in pars) cmd.Parameters.AddWithValue(name, value);
-            cmd.ExecuteNonQuery();
-            if (_writeFailStreak > 0)   // 失败后恢复：Info 收尾并清零
+            lock (_dbLock)
             {
-                int n = _writeFailStreak;
-                _writeFailStreak = 0;
-                _log("Inventory", $"SQLite 写入恢复（此前连续失败 {n} 次）", LogLevel.Info);
+                using var cmd = Conn().CreateCommand();
+                cmd.CommandText = sql;
+                foreach (var (name, value) in pars) cmd.Parameters.AddWithValue(name, value);
+                cmd.ExecuteNonQuery();
+                if (_writeFailStreak > 0)   // 失败后恢复：Info 收尾并清零
+                {
+                    int n = _writeFailStreak;
+                    _writeFailStreak = 0;
+                    _log("Inventory", $"SQLite 写入恢复（此前连续失败 {n} 次）", LogLevel.Info);
+                }
             }
         }
         catch (Exception e)
@@ -431,15 +569,29 @@ public sealed class Inventory
         }
     }
 
-    private SqliteConnection Open()
+    /// <summary>单例连接（D1：不再每写开一次连接）：懒打开 + WAL 只设一次；所有命令在 _dbLock 内使用</summary>
+    private SqliteConnection Conn()
     {
-        var conn = new SqliteConnection($"Data Source={_dbPath}");
-        conn.Open();
-        using (var pragma = conn.CreateCommand())
+        lock (_dbLock)
         {
-            pragma.CommandText = "PRAGMA journal_mode=WAL;";
-            pragma.ExecuteNonQuery();
+            if (_conn == null)
+            {
+                _conn = new SqliteConnection($"Data Source={_dbPath}");
+                _conn.Open();
+                using var pragma = _conn.CreateCommand();
+                pragma.CommandText = "PRAGMA journal_mode=WAL;";
+                pragma.ExecuteNonQuery();
+            }
+            return _conn;
         }
-        return conn;
+    }
+
+    public void Dispose()
+    {
+        lock (_dbLock)
+        {
+            _conn?.Dispose();
+            _conn = null;
+        }
     }
 }

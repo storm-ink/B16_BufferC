@@ -18,7 +18,6 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="6.0.36" />
-    <PackageReference Include="NModbus" Version="3.0.83" />
     <!-- 2.1.4：2.1.5 起原生 e_sqlite3 基线抬到 GLIBC_2.28（objdump -T 实测），CentOS 7 只有 2.1.4 及以前兼容（≤2.14）；
          且 2.1.4 ≥ Microsoft.Data.Sqlite 6.0.36 要求的最低 2.1.2 -->
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.4" />

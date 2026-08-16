@@ -130,8 +130,6 @@ public sealed class HsmsServer : IDisposable
 
     public bool SendS1F2() => SendReply(1, 2, SecsEncode.L(SecsEncode.A(_cfg.Mdln), SecsEncode.A(_cfg.SoftRev)));
 
-    public bool SendLinkTest() => SendRaw(0, 5, false, Array.Empty<byte>(), 0);   // S0F5 Linktest.req
-
     // ---------- 接收循环 ----------
     private async Task AcceptLoopAsync(CancellationToken ct)
     {

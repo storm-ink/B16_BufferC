@@ -19,6 +19,7 @@ public sealed class BufferCConfig
     public int WebPort { get; set; }                       // Web 界面端口（0=不启动）
     public string LogLevel { get; set; } = "info";         // error|warn|info|debug|trace（启动最小级别；联调可 /api/debug 运行时切换）
     public bool LogModbusFrames { get; set; }              // Modbus TX/RX 帧日志（trace 级，默认关；联调开）
+    public bool ReconcileStrict { get; set; }              // 对账严格模式：true=InventoryDataSend 时删除 MCS 未包含的本地条目；false=只记差异（默认保守）
     public AgvcConfig Agvc { get; set; } = new();          // AGVC HTTP 集成（baseUrl 空=出站调用禁用）
 
     public static BufferCConfig Load(string path)

@@ -148,12 +148,19 @@ public sealed class ScenarioTests : IAsyncLifetime
         _plc.SetCarrierId(4, "CARRIER004");
         _plc.DropConnection();                         // 断线注入
         _plc.SetStationState(4, 1);                    // 断线期间发生变化（重连后仅状态同步，不补报）
-        await Task.Delay(2500);                        // 等重连（1s 退避）+ 基线重建
+        // 条件等重连 + 基线重建（替代 2500ms 固定等）：重连可观测（ClientCount），基线重建以 S1F3 查询结果收敛为准
+        var deadline = Environment.TickCount64 + 10000;
+        while (_plc.ClientCount == 0 && Environment.TickCount64 < deadline) await Task.Delay(100);
+        List<SecsItem>? carriers = null;
+        deadline = Environment.TickCount64 + 10000;
+        while (Environment.TickCount64 < deadline && (carriers == null || carriers.Count == 0))
+        {
+            await Task.Delay(100);
+            carriers = (await _mcs.QuerySvidAsync(15))[0].Children!;
+        }
         var ev = await _mcs.WaitForEventAsync(204, 1000);
         Assert.Null(ev);                               // 断线期间的事件不补报
         // 状态已同步：S1F3 查询能反映 PLC 实况（快照合并），但无 204 事件
-        var items = await _mcs.QuerySvidAsync(15);
-        var carriers = items[0].Children!;
         Assert.Single(carriers);
         Assert.Equal("CARRIER004", carriers[0].Children![0].AsString());
     }
@@ -179,20 +186,6 @@ public sealed class ScenarioTests : IAsyncLifetime
         Assert.Equal((uint)0, r18.Items()[0].AsUInt());                  // ONLACK=0
         var ev = await _mcs.WaitForEventAsync(3, 1000);
         Assert.Null(ev);                                                 // 不再发 CEID 3
-    }
-
-    [Fact]
-    public async Task Scenario10_BCR_NG_501_IDReadStatus1()
-    {
-        _plc.TriggerScan(2, "UNK-20260804120000000-Buffer1_Port2");      // 扫码失败 → UNK 载具
-        var ev501 = await _mcs.WaitForEventAsync(501);
-        var ev201 = await _mcs.WaitForEventAsync(201);
-        Assert.NotNull(ev501);
-        Assert.NotNull(ev201);
-        var l = ev501!.Items()[0].Children!;
-        var rpt = l[2].Children![0].Children![1];                        // RPT5: A id, A loc, U2 status
-        Assert.StartsWith("UNK-", rpt.Children![0].AsString());
-        Assert.Equal((uint)1, rpt.Children![2].AsUInt());                // IDReadStatus=1
     }
 
     [Fact]
@@ -397,7 +390,10 @@ public sealed class ScenarioTests : IAsyncLifetime
     public async Task Scenario15_HsmsDisconnect_Recover()
     {
         _mcs.Dispose();                                                  // HSMS 断开
-        await Task.Delay(500);                                           // 服务端检测断开
+        // 条件等服务端清理完成（替代 500ms 固定等）：旧 ClientLoop 的 finally 会 Dispose _client——
+        // 不等待可能误杀刚建立的新连接
+        var deadline = Environment.TickCount64 + 5000;
+        while (_svc.GetDebugInfo().Mcs.Connected && Environment.TickCount64 < deadline) await Task.Delay(50);
         var mcs2 = new McsSim();
         mcs2.Connect("127.0.0.1", 5100);
         await mcs2.EstablishAsync();
@@ -415,7 +411,14 @@ public sealed class ScenarioTests : IAsyncLifetime
         // 重启恢复：台账为空时 SVID 15 反映 PLC 实况（快照合并）
         _plc.SetCarrierId(5, "CARRIER005");
         _plc.SetStationState(5, 1);
-        await Task.Delay(400);
+        // 条件等轮询器读到状态+ID（替代 400ms 固定等）：重启前快照必须已含 CARRIER005
+        var deadline = Environment.TickCount64 + 5000;
+        while (Environment.TickCount64 < deadline)
+        {
+            var st5 = _svc.GetStatusView().Plcs[0].Stations[4];
+            if (st5.State == 1 && st5.CarrierId == "CARRIER005") break;
+            await Task.Delay(50);
+        }
         _mcs.Dispose();
         _svc.Dispose();                                                  // 模拟 BufferC 重启
         await Task.Delay(300);

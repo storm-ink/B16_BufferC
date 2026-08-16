@@ -11,6 +11,7 @@
   "logLevel": "debug",
   "logRetentionDays": 7,
   "auditFile": "bufferc.audit.log",
+  "reconcileStrict": false,
   "dbPath": "bufferc-mcs2.db",
   "webPort": 7001
 }

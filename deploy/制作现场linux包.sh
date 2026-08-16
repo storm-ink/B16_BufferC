@@ -29,6 +29,7 @@ cfg = {
     "logLevel": "info",
     "logRetentionDays": 7,
     "auditFile": "bufferc.audit.log",
+    "reconcileStrict": False,
     "dbPath": "bufferc.db",
     "webPort": 7001,
 }

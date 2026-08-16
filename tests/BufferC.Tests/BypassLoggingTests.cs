@@ -43,6 +43,7 @@ public class BypassLoggingTests
             // 建满 16 行时 INSERT 连续失败：第 1 次 ERROR、第 10 次 Debug（节流）
             Assert.Contains(captured, x => x.Msg.Contains("SQLite 写入失败") && x.Msg.Contains("连续第 1 次") && x.Level == LogLevel.Error);
             Assert.Contains(captured, x => x.Msg.Contains("SQLite 写入失败") && x.Msg.Contains("连续第 10 次") && x.Level == LogLevel.Debug);
+            inv.Dispose();
         }
         finally
         {

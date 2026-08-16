@@ -141,6 +141,7 @@ public class InventoryTests
             inv1.SetDeviceState(1, 3);
             inv1.UpdateStationState(1, 4, 2, 9, 1, "");            // 正放 + 告警码 + 停服
 
+            inv1.Dispose();                                       // 单例连接（D1）：释放文件句柄供重启实例与清理
             SqliteConnection.ClearAllPools();
             var inv2 = new Inventory(db, 1);                       // 重启恢复
             Assert.Equal(16, inv2.Ledger.Count);
@@ -156,6 +157,7 @@ public class InventoryTests
             Assert.Single(inv2.Alarms);
             Assert.Equal(1, inv2.ControlState);
             Assert.Equal(3, inv2.ScState);
+            inv2.Dispose();
         }
         finally
         {
@@ -167,7 +169,7 @@ public class InventoryTests
     [Fact]
     public void CommandQueue_StateMachine_AndStaleRecovery()
     {
-        // 第二期异步命令：入队(1) → 执行中(2) → 成功(0)/失败(3)；重启恢复未完成命令标记失败
+        // 第二期异步命令：入队(1) → 执行中(2) → 成功(0)/失败(3)；重启恢复未完成命令 → 4 恢复待校验（B4 重执行）
         var inv = new Inventory(null, 1);
         inv.QueueCommand(1, 2, RegisterMap.CmdWrite, "CARRIER001", "MCS");
         var row = inv.Ledger.Single(r => r.Station == 2);
@@ -190,14 +192,17 @@ public class InventoryTests
         inv.FailCommand(1, 3);
         Assert.Equal(3, inv.Ledger.Single(r => r.Station == 3).CmdState);
 
-        // 重启恢复：待执行/执行中 → 标记失败并返回
+        // 重启恢复（B4 重执行策略）：待执行/执行中 → 4=恢复待校验；校验通过 RequeueCommand → 1
         inv.QueueCommand(1, 4, RegisterMap.CmdWrite, "CARRIER003", "AGV");
         inv.QueueCommand(1, 5, RegisterMap.CmdClear, "CARRIER004", "MCS");
-        var stale = inv.FailStaleCommands();
+        var stale = inv.RequeueStaleCommands();
         Assert.Equal(2, stale.Count);
         Assert.All(stale, r => Assert.True(r.CmdState is 1 or 2));
-        Assert.Equal(3, inv.Ledger.Single(r => r.Station == 4).CmdState);
-        Assert.Equal(3, inv.Ledger.Single(r => r.Station == 5).CmdState);
+        Assert.Equal(4, inv.Ledger.Single(r => r.Station == 4).CmdState);
+        Assert.Equal(4, inv.Ledger.Single(r => r.Station == 5).CmdState);
+        Assert.Contains(inv.PendingCommands, r => r.Station == 4);   // 恢复待校验同样入队
+        inv.RequeueCommand(1, 4);
+        Assert.Equal(1, inv.Ledger.Single(r => r.Station == 4).CmdState);
     }
 
     [Fact]
@@ -208,14 +213,61 @@ public class InventoryTests
         {
             var inv1 = new Inventory(db, 1);
             inv1.QueueCommand(1, 2, RegisterMap.CmdWrite, "CARRIER001", "MCS");
+            inv1.Dispose();
             SqliteConnection.ClearAllPools();
             var inv2 = new Inventory(db, 1);
             var row = inv2.Ledger.Single(r => r.Station == 2);
             Assert.Equal(1, row.CmdState);
             Assert.Equal("CARRIER001", row.CmdCarrierId);
             Assert.Equal("MCS", row.CmdSource);
-            var stale = inv2.FailStaleCommands();   // 重启恢复路径
+            var stale = inv2.RequeueStaleCommands();   // 重启恢复路径（B4 重执行）
             Assert.Single(stale);
+            Assert.Equal(4, inv2.Ledger.Single(r => r.Station == 2).CmdState);
+            inv2.Dispose();
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (File.Exists(db)) File.Delete(db);
+        }
+    }
+
+    [Fact]
+    public void History_PersistsAcrossRestart()
+    {
+        // B3：事件/命令/告警/悬空命令历史四表持久化，重启后 Load* 可读
+        var db = TempDb();
+        try
+        {
+            var t = new DateTime(2026, 8, 17, 10, 0, 0, 123);
+            var inv1 = new Inventory(db, 1);
+            inv1.AddEventHistory(t, 204, "CarrierInstalled");
+            inv1.AddCommandHistory(t, "MCS", 1, 2, "CarrierDataInstall", true, 123, "C1");
+            inv1.AddCommandHistory(t.AddSeconds(1), "MCS", 1, 3, "CarrierDataRemove", false, 456, "C2");
+            inv1.AddAlarmHistory(t, "BUFFER01_01", 9001, "命令执行失败（悬空命令）", "SET");
+            inv1.AddFailedHistory(t, "MCS", "CarrierDataInstall", "C2", "BUFFER01_03");
+            inv1.Dispose();
+
+            SqliteConnection.ClearAllPools();
+            var inv2 = new Inventory(db, 1);
+            var evs = inv2.LoadEvents(10);
+            Assert.Single(evs);
+            Assert.Equal(204, evs[0].Ceid);
+            Assert.Equal(t, evs[0].Time);
+            var cmds = inv2.LoadCommands(10);
+            Assert.Equal(2, cmds.Count);
+            Assert.Equal("C1", cmds[0].CarrierId);
+            Assert.True(cmds[0].Ok);
+            Assert.False(cmds[1].Ok);
+            Assert.Equal(3, cmds[1].Station);
+            var alarms = inv2.LoadAlarms(10);
+            Assert.Single(alarms);
+            Assert.Equal("SET", alarms[0].Action);
+            Assert.Equal((uint)9001, alarms[0].AlarmId);
+            var failed = inv2.LoadFailed(10);
+            Assert.Single(failed);
+            Assert.Equal("C2", failed[0].CarrierId);
+            inv2.Dispose();
         }
         finally
         {
@@ -246,9 +298,11 @@ public class InventoryTests
             Assert.Equal(16, inv.Ledger.Count);
             Assert.Equal("", inv.Ledger.Single(r => r.Station == 2).CarrierId);
             inv.SetCarrier(1, 2, "NEW001", "BUFFER01_02", "MCS");  // 新表正常读写
+            inv.Dispose();
             SqliteConnection.ClearAllPools();
             var inv2 = new Inventory(db, 1);
             Assert.Equal("NEW001", inv2.Ledger.Single(r => r.Station == 2).CarrierId);
+            inv2.Dispose();
         }
         finally
         {
