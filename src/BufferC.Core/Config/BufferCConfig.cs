@@ -37,12 +37,16 @@ public sealed class BufferCConfig
     {
         var errors = new List<string>();
         var seen = new HashSet<int>();
+        var seenNames = new HashSet<string>();
         foreach (var p in cfg.Plcs)
         {
-            if (p.Index is < 1 or > 15) errors.Add($"PLC index {p.Index} 越界（允许 1~15）");
+            if (p.Index is < 1 or > 9) errors.Add($"PLC index {p.Index} 越界（允许 1~9）");
             if (!seen.Add(p.Index)) errors.Add($"PLC index {p.Index} 重复");
             if (string.IsNullOrWhiteSpace(p.Ip)) errors.Add($"PLC{FormatIdx(p)} IP 为空");
             if (p.Port is < 1 or > 65535) errors.Add($"PLC{FormatIdx(p)} 端口非法: {p.Port}");
+            if (p.Stations is < 1 or > 16) errors.Add($"PLC{FormatIdx(p)} stations 非法: {p.Stations}（允许 1~16）");
+            if (!string.IsNullOrWhiteSpace(p.Name) && !seenNames.Add(p.Name))
+                errors.Add($"PLC 机台名重复: {p.Name}");
         }
         if (cfg.Hsms.ListenPort is < 1 or > 65535) errors.Add($"HSMS 端口非法: {cfg.Hsms.ListenPort}");
         if (cfg.WebPort is < 0 or > 65535) errors.Add($"Web 端口非法: {cfg.WebPort}");
@@ -60,8 +64,9 @@ public sealed class BufferCConfig
             errors.Add($"historyRetentionRows 非法: {cfg.HistoryRetentionRows}（允许 100~100000）");
         if (cfg.DebugReadChunkWords is < 1 or > 125)
             errors.Add($"debugReadChunkWords 非法: {cfg.DebugReadChunkWords}（允许 1~125，Modbus 单帧上限）");
-        if (cfg.Agvc.CmsIndexBase <= RegisterMap.StationsPerPlc)
-            errors.Add($"agvc.cmsIndexBase {cfg.Agvc.CmsIndexBase} 非法（必须大于站口数 {RegisterMap.StationsPerPlc}，否则站口位溢出到机台位）");
+        int maxStations = cfg.Plcs.Count > 0 ? cfg.Plcs.Max(p => p.Stations) : RegisterMap.StationsPerPlc;
+        if (cfg.Agvc.CmsIndexBase <= maxStations)
+            errors.Add($"agvc.cmsIndexBase {cfg.Agvc.CmsIndexBase} 非法（必须大于最大站口数 {maxStations}，否则站口位溢出到机台位）");
         if (cfg.Agvc.CmsIndexBase > 1_000_000)
             errors.Add($"agvc.cmsIndexBase {cfg.Agvc.CmsIndexBase} 过大（上限 1000000）");
         if (cfg.Agvc.TimeoutSec is < 1 or > 60) errors.Add($"agvc.timeoutSec {cfg.Agvc.TimeoutSec} 非法（允许 1~60）");
@@ -86,13 +91,15 @@ public sealed class BufferCConfig
 
 public sealed class PlcConfig
 {
-    public int Index { get; set; }                         // 1~15
+    public int Index { get; set; }                         // 1~9（内部编号：数组下标/命令区偏移/cmsIndex 机台号）
     public string Ip { get; set; } = "";
     public int Port { get; set; } = 502;
     public byte UnitId { get; set; } = 1;                  // 现场确认（1/255）
     public string ByteOrder { get; set; } = "high";        // 货物ID 字内字节序: high=高字节在前
     public int TimeoutMs { get; set; } = 3000;
     public uint LastSeq { get; set; }
+    public string? Name { get; set; }                      // 机台名（现场 2026-08-17：MAGV03B01~09；缺省回退 BUFFER{index:00}）
+    public int Stations { get; set; } = 16;                // 站口数（现场：MAGV03B03=16，其余 8；寄存器布局恒 16 站空间，只裁剪逻辑站口）
 }
 
 public sealed class HsmsConfig

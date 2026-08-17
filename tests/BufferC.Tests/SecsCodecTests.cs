@@ -186,9 +186,12 @@ public class SecsCodecTests
         var engine = new EventEngine();
         engine.Diff(Snapshot(0, 0));
         var set = engine.Diff(Snapshot(0, 5));
-        Assert.Equal(2, set.Count);                          // 102 + 402
+        // 一个事件 = 一组三帧（置起 S5F1+102+402 / 清除 S5F1+101+401），由 BufferCService 在组锁内连发（现场要求 2026-08-17）
+        var ev = Assert.Single(set);
+        Assert.Equal(EventKind.AlarmSet, ev.Kind);
         var clear = engine.Diff(Snapshot(0, 0));
-        Assert.Equal(2, clear.Count);                        // 101 + 401
+        var evc = Assert.Single(clear);
+        Assert.Equal(EventKind.AlarmCleared, evc.Kind);
     }
 
     private static PlcSnapshot Snapshot(ushort station1State, ushort station1Alarm)

@@ -11,27 +11,62 @@ function clsForLog(line) {
   if (line.category === '←MCS' || line.category === '→MCS') return 'l-frame';
   return '';
 }
-function logRow(l) { return `<div><span class="t">${fmtTime(l.time)}</span> <span class="c">[${esc(l.category)}]</span> <span class="${clsForLog(l)}">${esc(l.message)}</span></div>`; }
+// 日志行时间（约定格式：yyyy-MM-dd HH:mm:ss.fff）
+function fmtLogTime(t) {
+  const d = new Date(t);
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${String(d.getMilliseconds()).padStart(3, '0')}`;
+}
+// 级别位（定宽 5：与文件/控制台的约定行格式一致；审计行用 AUDIT）
+function levelTag(l) {
+  if (l.isAudit) return 'AUDIT';
+  return ({ Error: 'ERROR', Warn: 'WARN ', Info: 'INFO ', Debug: 'DEBUG', Trace: 'TRACE' })[l.level] || l.level;
+}
+function logRow(l) {
+  return `<div><span class="t">${fmtLogTime(l.time)}</span> <span class="${clsForLog(l) || 'c'}">[${levelTag(l)}]</span> <span class="c">[${esc(l.category)}]</span> <span class="t">[#${String(l.seq).padStart(6, '0')}]</span> <span class="${clsForLog(l)}">${esc(l.message)}</span></div>`;
+}
 function wordOk(l) { return !logWord || logWord.split('|').some(w => l.message.includes(w)); }
 
 // ---------- 日志（仅本页激活时轮询） ----------
+let lastRenderedAuditSeq = 0;
+
 async function loadLogs() {
   if (logPaused) return;
   const box = document.getElementById('logs');
   try {
-    const url = '/api/logs?tail=200' + (logFilter ? '&category=' + encodeURIComponent(logFilter) : '') + (logLevel ? '&level=' + logLevel : '');
-    const logs = await (await fetch(url)).json();
+    const url = '/api/logs?tail=300' + (logFilter ? '&category=' + encodeURIComponent(logFilter) : '') + (logLevel ? '&level=' + logLevel : '');
+    const res = await apiGet(url);
+    if (!res.fresh) return;   // 过期响应丢弃
+    const logs = res.data;
     clearError(box);
-    const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 30;
     // 过滤/级别/暂停恢复 → 全量重绘；普通轮询按 seq 增量追加（避免全量 innerHTML 重绘丢滚动）
     if (needFullRerender) {
       box.innerHTML = logs.filter(wordOk).map(logRow).join('');
+      while (box.children.length > 500) box.removeChild(box.firstChild);
       needFullRerender = false;
     } else {
-      for (const l of logs) if (l.seq > lastRenderedSeq && wordOk(l)) box.insertAdjacentHTML('beforeend', logRow(l));
+      for (const l of logs) if (l.seq > lastRenderedSeq && wordOk(l)) appendCapped(box, logRow(l), 500);
     }
     if (logs.length) lastRenderedSeq = logs[logs.length - 1].seq;
-    if (atBottom) box.scrollTop = box.scrollHeight;
+  } catch (e) { reportError(box, e); }
+}
+
+// 流程日志页：审计行（AUDIT）全量显示，不过滤（与日志页错开轮询，不并发 → 不踩 apiGet 序号）
+async function loadAuditLogs() {
+  const box = document.getElementById('auditLogs');
+  if (!box) return;
+  try {
+    const res = await apiGet('/api/logs?tail=300');
+    if (!res.fresh) return;
+    const audit = res.data.filter(l => l.isAudit);
+    clearError(box);
+    if (needFullRerender) {
+      box.innerHTML = audit.map(logRow).join('');
+      needFullRerender = false;
+    } else {
+      for (const l of audit) if (l.seq > lastRenderedAuditSeq) appendCapped(box, logRow(l), 500);
+    }
+    if (audit.length) lastRenderedAuditSeq = audit[audit.length - 1].seq;
   } catch (e) { reportError(box, e); }
 }
 

@@ -18,21 +18,24 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
 {
     private readonly BufferCConfig _cfg;
     private readonly Inventory _inv;
-    private readonly EventEngine _engine = new();
+    private readonly EventEngine _engine;
     private readonly List<PlcPoller> _pollers = new();
     private readonly CancellationTokenSource _cts = new();
     private HsmsServer? _hsms;
     private AgvcClient? _agvc;                              // 出站 AGVC 客户端（baseUrl 空=不启用）
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _agvcArrivalTimers = new();
-    private readonly ConcurrentDictionary<string, bool> _scanUnk = new();   // D3："plc:st" → 扫码码是否 UNK 前缀（worker 发 501 的 IDReadStatus）
-    private readonly SemaphoreSlim[] _cmdSignals = Enumerable.Range(0, 15).Select(_ => new SemaphoreSlim(0)).ToArray();   // D2：每 PLC 命令入队信号（替代 200ms 忙轮询）
+    private readonly SemaphoreSlim[] _cmdSignals;   // D2：每 PLC 命令入队信号（替代 200ms 忙轮询；长度=配置 PLC 台数）
+    private readonly object _alarmSendLock = new();   // 告警组三帧连发（S5F1+102+402 / S5F1+101+401）组间互不交错（现场要求 2026-08-17）
     private LogLevel _minLevel = LogLevel.Info;             // 启动按 cfg.LogLevel 解析；/api/debug 可运行时切换
     private long _logSeq;
 
     public BufferCService(BufferCConfig cfg)
     {
         _cfg = cfg;
-        _inv = new Inventory(cfg.DbPath, cfg.Plcs.Count, Log, cfg.HistoryRetentionRows);   // 站口主表：开机建满 机台数×16 行；日志收编入统一管道
+        _cmdSignals = Enumerable.Range(0, cfg.Plcs.Count).Select(_ => new SemaphoreSlim(0)).ToArray();
+        _engine = new EventEngine(i => cfg.Plcs.FirstOrDefault(p => p.Index == i)?.Name);   // 机台名注入（缺省回退 BUFFER 旧格式）
+        _inv = new Inventory(cfg.DbPath, cfg.Plcs.Count, Log, cfg.HistoryRetentionRows,
+            (p, s) => _engine.Unit(p, s), cfg.Plcs.Select(p => p.Stations).ToList());       // 站口主表：每台按 stations 建行；日志收编入统一管道
         _minLevel = Enum.TryParse<LogLevel>(cfg.LogLevel, true, out var lv) ? lv : LogLevel.Info;
     }
 
@@ -121,7 +124,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
     public Func<DateTime> Clock = () => DateTime.Now;
 
     // ---------- 活动记录（界面/联调用，环形缓冲） ----------
-    public sealed record LogEntry(DateTime Time, string Category, LogLevel Level, long Seq, string Message);
+    public sealed record LogEntry(DateTime Time, string Category, LogLevel Level, long Seq, string Message, bool IsAudit = false);
     public sealed record EventEntry(DateTime Time, ushort Ceid, string Description);
     public sealed record CmdEntry(DateTime Time, string Source, int Station, string Cmd, bool Ok, long ElapsedMs, string CarrierId);
     public sealed record AlarmHistoryEntry(DateTime Time, string UnitId, uint AlarmId, string Text, string Action);
@@ -179,7 +182,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
         var seq = Interlocked.Increment(ref _logSeq);
         var line = $"[{now:yyyy-MM-dd HH:mm:ss.fff}][AUDIT][{category}][#{seq:D6}] {OneLine(msg)}";
         Console.WriteLine(line);
-        _logs.Add(new LogEntry(now, category, LogLevel.Info, seq, msg));
+        _logs.Add(new LogEntry(now, category, LogLevel.Info, seq, msg, IsAudit: true));   // 前端日志面板据此显示 [AUDIT] 级别位
         WriteToRolling(_cfg.AuditFile!, ref _auditWriter, ref _auditDate, now, line);
     }
 
@@ -311,7 +314,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
     /// <summary>每轮轮询后同步站口主表（状态/告警/可用/ID 兜底；Inventory 内部变化才写）</summary>
     public void SyncSnapshot(PlcSnapshot snap)
     {
-        for (int i = 0; i < RegisterMap.StationsPerPlc; i++)
+        for (int i = 0; i < snap.StationCount; i++)
             _inv.UpdateStationState(snap.PlcIndex, i + 1, snap.StationState[i], snap.StationAlarm[i], snap.StationAvail[i], snap.CarrierId[i]);
     }
 
@@ -339,7 +342,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
                 break;
             case EventKind.CarrierRemoved:
                 _inv.RemoveCarrier(plcIndex, st, out _);
-                SendEvent(203, 2, Rpt2(p), $"PLC{plcIndex} 站口{st} {p.GetValueOrDefault("CarrierID", "")}");   // RPT2: CarrierID + HandoffType
+                SendEvent(203, 2, Rpt2(p), $"PLC{plcIndex} 站口{st} {p.GetValueOrDefault("CarrierID", "")}");   // RPT2: CarrierID + CarrierLoc
                 PushStationStatus(plcIndex, st);
                 break;
             case EventKind.CarrierInstallCompleted:
@@ -350,15 +353,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
             case EventKind.CarrierRemoveCompleted:
                 _inv.RemoveCarrier(plcIndex, st, out _);
                 SendEvent(202, 2, Rpt2(p), $"PLC{plcIndex} 站口{st} {p.GetValueOrDefault("CarrierID", "")}");
-                break;
-            case EventKind.CarrierIdRead:
-                CancelAgvcArrivalTimer(plcIndex, st);   // 扫码路径已写入 ID，取消「找 AGVC 要 ID」等待计时
-                SendEvent(501, 5, SecsEncode.L(
-                    SecsEncode.A(p.GetValueOrDefault("CarrierID", "")),
-                    SecsEncode.A(p.GetValueOrDefault("CarrierLoc", "")),
-                    SecsEncode.U2(ushort.Parse(p.GetValueOrDefault("IDReadStatus", "0")))),
-                    $"PLC{plcIndex} 站口{st} {p.GetValueOrDefault("CarrierID", "")}");
-                PushStationStatus(plcIndex, st, p.GetValueOrDefault("CarrierID", ""));
+                PushStationStatus(plcIndex, st);   // 与 203 一致：变化即推 AGVC
                 break;
             case EventKind.UnitInService:
                 _inv.UpdateUnit(plcIndex, st, 0);
@@ -372,40 +367,42 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
                 break;
             case EventKind.AlarmSet:
             {
-                // SC 级：S5F1 + 102（同告警多单位时引擎已去重，仅首个单位触发）；告警表只存当前置起
+                // 每单位告警组（2.2.1，现场要求 2026-08-17）：S5F1+102+402 三帧在组锁内连发，组间互不交错；告警表只存当前置起
                 uint alid = uint.Parse(p.GetValueOrDefault("AlarmId", "0"));
                 string text = p.GetValueOrDefault("AlarmText", "Alarm");
                 string unit = p.GetValueOrDefault("UnitId", "");
-                Audit("告警", $"S5F1 SET {alid} {text}");
-                if (!hsms.SendS5F1(true, alid, text))
-                    Log("告警", $"S5F1 SET {alid} 发送失败（MCS 未连接）", LogLevel.Error);
-                SendEvent(102, 1, Rpt1(p), $"PLC{plcIndex} 告警 {alid}");
+                lock (_alarmSendLock)
+                {
+                    Audit("告警", $"S5F1 SET {alid} {text}");
+                    if (!hsms.SendS5F1(true, alid, text))
+                        Log("告警", $"S5F1 SET {alid} 发送失败（MCS 未连接）", LogLevel.Error);
+                    SendEvent(102, 1, Rpt1(p), $"PLC{plcIndex} 告警 {alid}");
+                    SendEvent(402, 4, Rpt4(p), $"PLC{plcIndex} 站口{st} 告警 {alid}");
+                }
                 _alarmHistory.Add(new AlarmHistoryEntry(DateTime.Now, unit, alid, text, "SET"));
                 _inv.AddAlarmHistory(DateTime.Now, unit, alid, text, "SET");   // B3：告警历史持久化
                 _inv.AlarmSet(alid, unit, text);
                 break;
             }
-            case EventKind.UnitAlarmSet:
-                SendEvent(402, 4, Rpt4(p), $"PLC{plcIndex} 站口{st} 告警 {p.GetValueOrDefault("AlarmId", "")}");
-                break;
             case EventKind.AlarmCleared:
             {
-                // SC 级：S5F1(清除) + 101（仅最后一个单位清除时触发）；清除即删行（方案 A）
+                // 每单位清除组：S5F1+101+401 三帧在组锁内连发；清除即删行（方案 A）
                 uint alid = uint.Parse(p.GetValueOrDefault("AlarmId", "0"));
                 string text = p.GetValueOrDefault("AlarmText", "Alarm");
                 string unit = p.GetValueOrDefault("UnitId", "");
-                Audit("告警", $"S5F1 CLEAR {alid} {text}");
-                if (!hsms.SendS5F1(false, alid, text))
-                    Log("告警", $"S5F1 CLEAR {alid} 发送失败（MCS 未连接）", LogLevel.Error);
-                SendEvent(101, 1, Rpt1(p), $"PLC{plcIndex} 告警 {alid}");
+                lock (_alarmSendLock)
+                {
+                    Audit("告警", $"S5F1 CLEAR {alid} {text}");
+                    if (!hsms.SendS5F1(false, alid, text))
+                        Log("告警", $"S5F1 CLEAR {alid} 发送失败（MCS 未连接）", LogLevel.Error);
+                    SendEvent(101, 1, Rpt1(p), $"PLC{plcIndex} 告警 {alid}");
+                    SendEvent(401, 4, Rpt4(p), $"PLC{plcIndex} 站口{st} 告警 {alid}");
+                }
                 _alarmHistory.Add(new AlarmHistoryEntry(DateTime.Now, unit, alid, text, "CLEAR"));
                 _inv.AddAlarmHistory(DateTime.Now, unit, alid, text, "CLEAR");   // B3：告警历史持久化
                 _inv.AlarmClear(alid);
                 break;
             }
-            case EventKind.UnitAlarmCleared:
-                SendEvent(401, 4, Rpt4(p), $"PLC{plcIndex} 站口{st} 告警 {p.GetValueOrDefault("AlarmId", "")}");
-                break;
         }
     }
 
@@ -418,9 +415,10 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
     }
 
     // ---------- RPT 组装 ----------
+    /// <summary>RPT2 = 载具ID + 位置（MCS 现场约定 2026-08-17；原 HandoffType 区分已由状态区 5=人工有货承担，不再上报）</summary>
     private static byte[] Rpt2(Dictionary<string, string> p) => SecsEncode.L(
         SecsEncode.A(p.GetValueOrDefault("CarrierID", "")),
-        SecsEncode.A(p.GetValueOrDefault("CarrierLoc", p.GetValueOrDefault("HandoffType", ""))));
+        SecsEncode.A(p.GetValueOrDefault("CarrierLoc", "")));
 
     private static byte[] Rpt3(Dictionary<string, string> p) => SecsEncode.L(
         SecsEncode.A(p.GetValueOrDefault("UnitId", "")));
@@ -439,14 +437,30 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
     // 宽松解析：取前两个数字作为 Buffer 号与站口（支持 Buffer1_Port3 / 1号Buffer_3号站口 / Buffer1-3 等写法）
     private static readonly Regex LocRegex = new(@"(\d+)[^\d]*(\d+)", RegexOptions.Compiled);
 
-    /// <summary>站口定位解析：优先 AGVC cmsIndex 格式（纯数字，如 10001）→ 回落宽松文本格式</summary>
+    /// <summary>站口定位解析：① AGVC cmsIndex 纯数字 ② 现场新格式 机台名_P站口号（MAGV03B01_P05，按名称表精确解析）
+    /// ③ 回落旧宽松文本格式（Buffer1_Port3 等，兼容历史输入）</summary>
     private bool TryParseLoc(string loc, out int plc, out int station)
     {
         if (TryParseCmsIndex(loc, out plc, out station)) return true;
-        var m = LocRegex.Match(loc);
+        int us = loc.IndexOf('_');
+        if (us > 0)
+        {
+            string dev = loc[..us];
+            var m = Regex.Match(loc[(us + 1)..], @"^P(\d{1,2})$");
+            var plcCfg = _cfg.Plcs.FirstOrDefault(p => (p.Name ?? $"BUFFER{p.Index:00}") == dev);
+            if (plcCfg != null && m.Success && int.TryParse(m.Groups[1].Value, out station)
+                && station >= 1 && station <= plcCfg.Stations)
+            {
+                plc = plcCfg.Index;
+                return true;
+            }
+            // 「设备名_Pxx」形态但机台未知/站口越界：直接失败，不回落到宽松正则（防误解析成其他机台）
+            if (m.Success) { plc = 0; station = 0; return false; }
+        }
+        var lm = LocRegex.Match(loc);
         plc = 0; station = 0;
-        return m.Success && int.TryParse(m.Groups[1].Value, out plc)
-            && int.TryParse(m.Groups[2].Value, out station);
+        return lm.Success && int.TryParse(lm.Groups[1].Value, out plc)
+            && int.TryParse(lm.Groups[2].Value, out station);
     }
 
     // 悬空命令补偿（C1）：HCACK=4 已确认后命令失败 → 记录 + 内部告警 9001（告警码表 A9 确认后调整）
@@ -470,8 +484,11 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
         Log("CMD", $"悬空命令: {source} {cmd} {carrierId} {loc}（HCACK=4 已确认，执行失败）", LogLevel.Error);
         Audit("CMD", $"悬空命令: {source} {cmd} {carrierId} {loc}（HCACK=4 已确认，执行失败）");
         Audit("告警", $"S5F1 SET {AlarmCmdFailed} {cmd} {carrierId} {tag}");
-        if (_hsms != null && !_hsms.SendS5F1(true, AlarmCmdFailed, $"命令执行失败: {cmd} {carrierId} {loc}"))
-            Log("告警", $"S5F1 SET {AlarmCmdFailed} 发送失败（MCS 未连接）", LogLevel.Error);
+        lock (_alarmSendLock)   // 与告警组共用锁：9001 不得插进其他单位的告警组中间
+        {
+            if (_hsms != null && !_hsms.SendS5F1(true, AlarmCmdFailed, $"命令执行失败: {cmd} {carrierId} {loc}"))
+                Log("告警", $"S5F1 SET {AlarmCmdFailed} 发送失败（MCS 未连接）", LogLevel.Error);
+        }
         _inv.AlarmSet(AlarmCmdFailed, "SYSTEM", "命令执行失败（悬空命令）");
     }
 
@@ -501,8 +518,9 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
             Log("CMD", $"参数无效: CARRIERID={carrierId} CARRIERLOC={loc}", LogLevel.Warn);
             return false;
         }
-        if (st < 1 || st > RegisterMap.StationsPerPlc) { Log("CMD", $"站口越界: {loc}", LogLevel.Warn); return false; }
-        if (FindPoller(plc) == null) { Log("CMD", $"PLC{plc} 不存在", LogLevel.Warn); return false; }
+        var poller = FindPoller(plc);
+        if (poller == null) { Log("CMD", $"PLC{plc} 不存在", LogLevel.Warn); return false; }
+        if (st < 1 || st > poller.Config.Stations) { Log("CMD", $"站口越界: {loc}（该机台共 {poller.Config.Stations} 站）", LogLevel.Warn); return false; }
         var srcNorm = source == "AGVC" ? "AGV" : source;   // 台账来源归一（AGVC→AGV）
         _inv.QueueCommand(plc, st, RegisterMap.CmdWrite, carrierId, srcNorm);
         _cmdSignals[plc - 1].Release();   // D2：唤醒该 PLC 的工作线程
@@ -514,10 +532,9 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
     /// 扫码开始即 MarkScanInstalled（抑制并发 0→1 的 204；命令失败残留键由取出路径清理）。</summary>
     public void EnqueueScan(int plcIndex, int station, string scanCode)
     {
-        _scanUnk[$"{plcIndex}:{station}"] = scanCode.StartsWith("UNK");
         _engine.MarkScanInstalled(plcIndex, station);
         Log("PLC", $"扫码握手: PLC{plcIndex} 站口{station} 码=\"{scanCode}\" 已入队（异步执行）", LogLevel.Info);
-        ManualInstall(scanCode, EventEngine.Loc(plcIndex, station), "SCAN");
+        ManualInstall(scanCode, _engine.Loc(plcIndex, station), "SCAN");
     }
 
     /// <summary>移除载具——异步命令：先写表（cmd_state=1）返回 true，后台执行成功后刷表 + 发 202</summary>
@@ -556,7 +573,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
                         if (curId != "" && curId != row.CmdCarrierId)
                         {
                             _inv.FailCommand(row.PlcIndex, st);
-                            RecordFailedCommand(row.CmdSource, cmdName, row.CmdCarrierId, EventEngine.Loc(row.PlcIndex, st));
+                            RecordFailedCommand(row.CmdSource, cmdName, row.CmdCarrierId, _engine.Loc(row.PlcIndex, st));
                             Audit("CMD", $"恢复校验不通过（站口当前载具 {curId} ≠ 命令 {row.CmdCarrierId}，货已更换需人工介入）: PLC{row.PlcIndex} 站口{st}");
                             continue;
                         }
@@ -578,21 +595,19 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
                     _inv.AddCommandHistory(DateTime.Now, row.CmdSource, row.PlcIndex, st, cmdName, ok, sw.ElapsedMilliseconds, row.CmdCarrierId);   // B3：命令历史持久化
                     if (ok)
                     {
-                        var locNorm = EventEngine.Loc(row.PlcIndex, st);
+                        var locNorm = _engine.Loc(row.PlcIndex, st);
                         if (row.CmdType == RegisterMap.CmdWrite)
                         {
                             CancelAgvcArrivalTimer(row.PlcIndex, st);   // 命令已写入 ID，取消「找 AGVC 要 ID」计时
                             if (row.CmdSource == "SCAN")
                             {
-                                // 扫码路径（D3 异步化）：补 501（IDReadStatus：UNK 前缀=1）+ 事件流/历史记录；台账来源归一 MANUAL
-                                bool unk = _scanUnk.TryGetValue($"{row.PlcIndex}:{st}", out var u) && u;
-                                _scanUnk.TryRemove($"{row.PlcIndex}:{st}", out _);
+                                // 扫码路径（D3 异步化）：先报 501 CarrierIDRead（IDReadStatus=0 恒成功——UNK 失败路径已随 BCR NG 取消），再报 201
                                 var now = DateTime.Now;
                                 string desc501 = $"CarrierIdRead CarrierID={row.CmdCarrierId} CarrierLoc={locNorm}";
                                 _events.Add(new EventEntry(now, 501, desc501));
                                 _inv.AddEventHistory(now, 501, desc501);
-                                SendEvent(501, 5, SecsEncode.L(SecsEncode.A(row.CmdCarrierId), SecsEncode.A(locNorm),
-                                    SecsEncode.U2(unk ? (ushort)1 : (ushort)0)), $"PLC{row.PlcIndex} 站口{st} {row.CmdCarrierId}");
+                                SendEvent(501, 5, SecsEncode.L(SecsEncode.A(row.CmdCarrierId), SecsEncode.A(locNorm), SecsEncode.U2(0)),
+                                    $"PLC{row.PlcIndex} 站口{st} {row.CmdCarrierId}");
                             }
                             _inv.SetCarrier(row.PlcIndex, st, row.CmdCarrierId, locNorm, row.CmdSource == "SCAN" ? "MANUAL" : row.CmdSource);
                             _inv.CompleteCommand(row.PlcIndex, st, poller.Channel.LastSeq);
@@ -613,8 +628,11 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
                             _alarmHistory.Add(new AlarmHistoryEntry(DateTime.Now, "SYSTEM", AlarmCmdFailed, "命令执行失败（悬空命令）", "CLEAR"));
                             _inv.AddAlarmHistory(DateTime.Now, "SYSTEM", AlarmCmdFailed, "命令执行失败（悬空命令）", "CLEAR");   // B3：告警历史持久化
                             Audit("告警", $"S5F1 CLEAR {AlarmCmdFailed}（命令恢复成功自动清除）");
-                            if (_hsms != null && !_hsms.SendS5F1(false, AlarmCmdFailed, "命令执行失败（悬空命令）"))
-                                Log("告警", $"S5F1 CLEAR {AlarmCmdFailed} 发送失败（MCS 未连接）", LogLevel.Error);
+                            lock (_alarmSendLock)   // 与告警组共用锁：不得插进其他单位的告警组中间
+                            {
+                                if (_hsms != null && !_hsms.SendS5F1(false, AlarmCmdFailed, "命令执行失败（悬空命令）"))
+                                    Log("告警", $"S5F1 CLEAR {AlarmCmdFailed} 发送失败（MCS 未连接）", LogLevel.Error);
+                            }
                         }
                         Audit("CMD", $"命令完成: PLC{row.PlcIndex} 站口{st} {cmdName} {row.CmdCarrierId} seq={poller.Channel.LastSeq}（{sw.ElapsedMilliseconds}ms）");
                     }
@@ -622,7 +640,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
                     {
                         _inv.FailCommand(row.PlcIndex, st);
                         _inv.WriteCommandSeq(row.PlcIndex, st, poller.Channel.LastSeq);   // 失败也记录最后一次 400 触发值（排障对账用）
-                        RecordFailedCommand(row.CmdSource, cmdName, row.CmdCarrierId, EventEngine.Loc(row.PlcIndex, st));
+                        RecordFailedCommand(row.CmdSource, cmdName, row.CmdCarrierId, _engine.Loc(row.PlcIndex, st));
                     }
                 }
             }
@@ -687,7 +705,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
     public (bool Ok, long ElapsedMs) DebugSendCmd(int plcIndex, int station, ushort cmd, string? carrierId)
     {
         var p = FindPoller(plcIndex);
-        if (p == null) return (false, 0);
+        if (p == null || station < 1 || station > p.Config.Stations) return (false, 0);   // 站口按该机台站口数校验
         var sw = Stopwatch.StartNew();
         bool ok;
         try { ok = p.Channel.Execute(station, cmd, carrierId); }
@@ -705,7 +723,9 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
         if (!int.TryParse(s, out int idx)) return false;
         int b = _cfg.Agvc.CmsIndexBase;
         plc = idx / b; station = idx % b;
-        return plc is >= 1 and <= 15 && station is >= 1 and <= RegisterMap.StationsPerPlc;
+        int pi = plc;
+        var plcCfg = _cfg.Plcs.FirstOrDefault(p => p.Index == pi);
+        return plcCfg != null && station >= 1 && station <= plcCfg.Stations;
     }
 
     /// <summary>AGV 放入完成（2→1）：起等待窗口计时，窗口内扫码握手可取消；到期仍无 ID → 出站找 AGVC 要货物 ID</summary>
@@ -767,7 +787,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
     private string DeriveTrayId(int plcIndex, int station, bool present, string? knownId = null) =>
         !present ? ""
         : knownId
-            ?? _inv.Carriers.FirstOrDefault(c => c.CarrierLoc == EventEngine.Loc(plcIndex, station))?.CarrierId
+            ?? _inv.Carriers.FirstOrDefault(c => c.CarrierLoc == _engine.Loc(plcIndex, station))?.CarrierId
             ?? FindPoller(plcIndex)?.Snapshot?.CarrierId[station - 1] ?? "";
 
     /// <summary>手动触发 queryMachines（AGVC 联调页）：与自动路径一致——查询 ID → 写 PLC + 台账 + 201</summary>
@@ -814,7 +834,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
     public sealed record StatusView(int ControlState, int ScState, bool HsmsConnected, List<PlcView> Plcs,
         List<AlarmStatus> Alarms, Secs.HsmsServer.McsStats Mcs, SystemInfo System);
     public sealed record PlcView(int Index, string Ip, bool Connected, PlcPoller.PlcStats Stats,
-        PlcRegisters Registers, List<StationView> Stations);
+        PlcRegisters Registers, List<StationView> Stations, string Name, int StationCount);
     public sealed record PlcRegisters(ushort BufferNo, ushort AlarmSummary, ushort EchoNo, ushort[] EchoStation,
         ushort ScanStation, string ScanCode, ushort Handshake, string ByteOrder);
     public sealed record StationView(int Station, int State, int Alarm, int Avail, string CarrierId, bool Truncated,
@@ -829,9 +849,9 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
         {
             var s = p.Snapshot;
             var stations = new List<StationView>();
-            for (int i = 0; i < 16; i++)
+            for (int i = 0; i < p.Config.Stations; i++)
             {
-                var loc = EventEngine.Loc(p.Config.Index, i + 1);
+                var loc = _engine.Loc(p.Config.Index, i + 1);
                 // 台账为权威（含手动安装/命令安装）；快照兜底 AGV 实况
                 var carrier = _inv.Carriers.FirstOrDefault(c => c.CarrierLoc == loc);
                 var id = carrier?.CarrierId ?? (s != null ? s.CarrierId[i] ?? "" : "");
@@ -850,7 +870,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
                 s != null ? s.ScanStation : (ushort)0,
                 s != null ? s.ScanCode : "",
                 s != null ? s.Handshake : (ushort)0,
-                p.Config.ByteOrder), stations));
+                p.Config.ByteOrder), stations, DeviceNameOf(p.Config.Index), p.Config.Stations));
         }
         bool connected = _hsms?.Connected == true;
         return new StatusView(connected ? 5 : 1, 3, connected, plcs, Alarms.ToList(),
@@ -862,6 +882,9 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
         string.Join(", ", _cfg.Plcs.Select(p => $"{p.Index}:{p.Ip}")),
         string.Join(", ", _cfg.Plcs.Select(p => p.ByteOrder).Distinct()),
         _cfg.PollIntervalMs, _cfg.Hsms.ListenPort, _cfg.WebPort);
+
+    /// <summary>机台名（现场 2026-08-17：MAGV03B01；缺省回退 BUFFER{index:00}）</summary>
+    private string DeviceNameOf(int plcIndex) => _cfg.Plcs.FirstOrDefault(p => p.Index == plcIndex)?.Name ?? $"BUFFER{plcIndex:00}";
 
     // ---------- 台账合并视图（站口主表直出，服务端合成中文标签） ----------
     public sealed record StationLedgerRow(int PlcIndex, int Station, string DeviceNo, string UnitId,
@@ -875,7 +898,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
         RegisterMap.StHasCarrier => "有货",
         RegisterMap.StPutting => "正放",
         RegisterMap.StTaking => "正取",
-        RegisterMap.StFault => "故障",
+        RegisterMap.StFault => "其他",   // 状态 4 不再表示报警（2026-08-17 现场约定：报警唯一来源=18~33 报警码非 0；非 0→0 即消除）
         RegisterMap.StManualCarrier => "人工有货",
         _ => $"未知({s})",
     };
@@ -892,7 +915,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
     public List<StationLedgerRow> GetInventoryView() =>
         _inv.Ledger.Select(r => new StationLedgerRow(
             r.PlcIndex, r.Station,
-            $"BUFFER{r.PlcIndex:00}", r.UnitId,
+            DeviceNameOf(r.PlcIndex), r.UnitId,
             r.State, StateLabelOf(r.State),
             r.Avail, r.Avail == 0 ? "在服" : "停服",
             r.AlarmCode, r.CarrierId, r.InstallSource, r.UpdatedAt,
@@ -971,7 +994,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
             var loc = row.GetValueOrDefault("CARRIERLOC", "");
             if (id.Length == 0 || !TryParseLoc(loc, out int plc, out int st)) { skipped++; continue; }
             seen.Add(id);
-            var locNorm = EventEngine.Loc(plc, st);
+            var locNorm = _engine.Loc(plc, st);
             var c = _inv.Carriers.FirstOrDefault(x => x.CarrierId == id);
             if (c != null && c.CarrierLoc == locNorm) { unchanged++; continue; }
             // 搬站修复：旧位置标记离开（保留历史），再在新站安装——避免 SVID15/合并表双行显示

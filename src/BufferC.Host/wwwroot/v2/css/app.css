@@ -63,6 +63,7 @@ body { font-family: var(--font-ui); margin: 0; height: 100vh; display: flex; fle
        border-bottom: 1px solid var(--gridline); padding: var(--space-2) var(--space-3); flex-shrink: 0; }
 .tile { display: inline-flex; flex-direction: column; justify-content: center; gap: 1px;
         padding: 2px var(--space-3); border-left: 1px solid var(--border); }
+.bar-btn { margin-left: auto; padding: 4px 14px; font-size: 13px; cursor: pointer; }
 .tile-label { font-size: 11px; color: var(--ink-3); }
 .tile-value { font-size: 18px; font-weight: 600; line-height: 1.15; }
 .tile-note { font-size: 10px; color: var(--ink-2); }
@@ -89,7 +90,7 @@ body { font-family: var(--font-ui); margin: 0; height: 100vh; display: flex; fle
 .st1 { background: var(--state-has); color: var(--on-good); }
 .st2 { background: var(--state-placing); color: var(--on-warn); }
 .st3 { background: var(--state-removing); color: var(--on-serious); }
-.st4 { background: var(--state-fault); color: var(--on-crit); }
+.st4 { background: var(--state-idle); color: var(--ink-2); }
 .st99 { background: var(--state-manual); color: var(--on-good); }
 .offline-mark { position: absolute; top: 1px; right: 3px; font-size: 9px; background: rgba(0,0,0,.55);
                 border-radius: 3px; padding: 0 3px; color: #fff; }
@@ -225,3 +226,16 @@ table.list tbody tr:hover td, table.list tr:hover td { background: var(--surface
 .reg-table tr:hover td { background: var(--surface-2); }
 .err-chip { background: var(--status-crit); color: var(--on-crit); padding: 3px 10px; font-size: 12px; margin-bottom: 4px; border-radius: var(--radius-sm); }
 .btn-ack { background: var(--status-crit); color: var(--on-crit); border: none; border-radius: var(--radius-sm); padding: 3px 12px; cursor: pointer; }
+
+/* ---- Phase 5：滚动容器 + sticky 表头/首列 ---- */
+.tbl-scroll { max-height: 420px; overflow: auto; border: 1px solid var(--gridline); border-radius: var(--radius-sm); }
+.tbl-scroll .reg-table { margin-top: 0; }
+.tbl-scroll thead th { position: sticky; top: 0; background: var(--th-bg); z-index: 1; }
+.tbl-scroll td:first-child, .tbl-scroll th:first-child { position: sticky; left: 0; background: var(--surface); }
+.tbl-scroll th:first-child { background: var(--th-bg); z-index: 2; }
+
+
+/* 日志/流程日志页铺满当前窗口（卡片纵向拉伸，日志区吃掉剩余高度） */
+#page-logs.active, #page-flowlog.active { display: flex; flex-direction: column; height: 100%; }
+#page-logs.active .card, #page-flowlog.active .card { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+#page-logs.active .logs, #page-flowlog.active .logs { flex: 1; max-height: none; overflow-y: auto; }

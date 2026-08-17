@@ -91,6 +91,137 @@ public class FixRegressionTests
     }
 
     [Fact]
+    public async Task SecondMcsConnection_Rejected_FirstStaysConnected()
+    {
+        // 现场主备（2026-08-17）：先连者胜——第二台连接被拒绝（服务器直接关闭 socket），第一台不受影响
+        var plc = new PlcSim(1);
+        var plcPort = plc.Start();
+        var cfg = new BufferCConfig
+        {
+            Plcs = { new PlcConfig { Index = 1, Ip = "127.0.0.1", Port = plcPort, UnitId = 1, ByteOrder = "high" } },
+            Hsms = new HsmsConfig { ListenPort = 5120 },
+            PollIntervalMs = 100,
+            LogFile = "test-bufferc.log",
+        };
+        var svc = new BufferCService(cfg);
+        svc.Start();
+        try
+        {
+            var ready = Environment.TickCount64 + 15000;
+            while (!svc.AllPlcsReady && Environment.TickCount64 < ready) await Task.Delay(100);
+
+            var mcs1 = new McsSim();
+            mcs1.Connect("127.0.0.1", 5120);
+            await mcs1.EstablishAsync();
+
+            // 第二台：TCP 能连上，但服务器立即关闭 → S1F14 永远等不到（建连超时抛异常）
+            var mcs2 = new McsSim();
+            mcs2.Connect("127.0.0.1", 5120);
+            await Assert.ThrowsAnyAsync<Exception>(() => mcs2.EstablishAsync());
+
+            // 第一台完全不受影响：查询照常
+            Assert.NotNull(await mcs1.QuerySvidAsync(14));
+            mcs1.Dispose();
+            mcs2.Dispose();
+        }
+        finally
+        {
+            svc.Dispose();
+            plc.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task FieldNaming_DeviceNamePStation_AndStationCount()
+    {
+        // 现场布局（2026-08-17）：MAGV03B01_P01 命名 + 8 站裁剪——9~16 寄存器变化不产生幻影事件；SVID29 只 8 个单位
+        var plc = new PlcSim(1);
+        var plcPort = plc.Start();
+        var cfg = new BufferCConfig
+        {
+            Plcs = { new PlcConfig { Index = 1, Ip = "127.0.0.1", Port = plcPort, UnitId = 1, ByteOrder = "high", Name = "MAGV03B01", Stations = 8 } },
+            Hsms = new HsmsConfig { ListenPort = 5121 },
+            PollIntervalMs = 100,
+            LogFile = "test-bufferc.log",
+        };
+        var svc = new BufferCService(cfg);
+        svc.Start();
+        try
+        {
+            var ready = Environment.TickCount64 + 15000;
+            while (!svc.AllPlcsReady && Environment.TickCount64 < ready) await Task.Delay(100);
+            var mcs = new McsSim();
+            mcs.Connect("127.0.0.1", 5121);
+            await mcs.EstablishAsync();
+
+            // 9 号站（超出 8 站裁剪）变化 → 无幻影事件
+            plc.SetStationState(9, 1);
+            Assert.Equal(0, await mcs.WaitForEventCountAsync(204, 1, 1000));
+
+            // 1 号站放入 → 204 位置 = MAGV03B01_P01；台账 UnitId/DeviceNo 同步
+            plc.SetCarrierId(1, "FIELD01");
+            plc.SetStationState(1, 1);
+            var ev = await mcs.WaitForEventAsync(204, 5000);
+            Assert.NotNull(ev);
+            var rpt = ev!.Items()[0].Children![2].Children![0].Children![1];
+            Assert.Equal("MAGV03B01_P01", rpt.Children![1].AsString());
+            Assert.Contains(svc.Ledger, r => r.UnitId == "MAGV03B01_P01");
+            Assert.All(svc.Ledger, r => Assert.True(r.Station <= 8));   // 台账只 8 行
+            Assert.Equal(8, svc.Ledger.Count);
+
+            // SVID29 单位列表 = 8 个，命名新格式
+            var units = (await mcs.QuerySvidAsync(29))[0].Children!;
+            Assert.Equal(8, units.Count);
+            Assert.Equal("MAGV03B01_P01", units[0].Children![0].AsString());
+
+            // 前端视图：PlcView 带 name 与 stationCount
+            var view = svc.GetStatusView().Plcs[0];
+            Assert.Equal("MAGV03B01", view.Name);
+            Assert.Equal(8, view.StationCount);
+            Assert.Equal(8, view.Stations.Count);
+            mcs.Dispose();
+        }
+        finally
+        {
+            svc.Dispose();
+            plc.Dispose();
+        }
+    }
+
+    [Fact]
+    public void FieldNaming_TryParseLoc_NewAndLegacyFormats()
+    {
+        // 位置解析：MAGV03B03_P16（16 站机台）与旧 Buffer1_Port5 均可用；8 站机台的 P09 越界
+        var cfg = new BufferCConfig
+        {
+            Plcs =
+            {
+                new PlcConfig { Index = 1, Ip = "127.0.0.1", Port = 1, Name = "MAGV03B01", Stations = 8 },
+                new PlcConfig { Index = 2, Ip = "127.0.0.1", Port = 2, Name = "MAGV03B02", Stations = 8 },
+                new PlcConfig { Index = 3, Ip = "127.0.0.1", Port = 3, Name = "MAGV03B03", Stations = 16 },
+            },
+            Hsms = new HsmsConfig { ListenPort = 5122 },
+        };
+        var svc = new BufferCService(cfg);
+        svc.Start();   // 建 poller（ManualInstall 需 FindPoller；仿真端口无服务，连接失败走退避，无碍）
+        try
+        {
+            Assert.True(svc.ManualInstall("X1", "MAGV03B03_P16"));   // B03 16 站 → plc=3 st=16
+            Assert.Contains(svc.Ledger, r => r.PlcIndex == 3 && r.Station == 16 && r.CmdState == 1);
+            Assert.True(svc.ManualInstall("X2", "MAGV03B01_P08"));   // B01 8 站边界
+            Assert.Contains(svc.Ledger, r => r.PlcIndex == 1 && r.Station == 8 && r.CmdState == 1);
+            Assert.False(svc.ManualInstall("X3", "MAGV03B01_P09"));  // 8 站机台 P09 越界
+            Assert.False(svc.ManualInstall("X4", "MAGV03B99_P01"));  // 未知机台名
+            Assert.True(svc.ManualInstall("X5", "Buffer1_Port5"));   // 旧格式兼容
+            Assert.Contains(svc.Ledger, r => r.PlcIndex == 1 && r.Station == 5 && r.CmdState == 1);
+        }
+        finally
+        {
+            svc.Dispose();
+        }
+    }
+
+    [Fact]
     public async Task Alarm9001_AutoClearsOnNextCommandSuccess()
     {
         // A6：命令失败置起 9001（S5F1 SET）→ 下条命令成功自动发 S5F1 CLEAR 并删行

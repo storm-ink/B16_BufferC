@@ -15,7 +15,7 @@ publish_all() {
   dotnet publish "$REPO/tests/Simulator" -c Release -o "$REPO/publish/simulator" >/dev/null 2>&1
 }
 
-# 生成单 PLC 场景 config（hsms 5000 / plc 127.0.0.1:$PLC_PORT / webPort 0）
+# 生成单 PLC 场景 config（hsms 5100——避让真实 MCS 的 5000 / plc 127.0.0.1:$PLC_PORT / webPort 0）
 gen_config() {
   mkdir -p "$WORK"
   python - "$PLC_PORT" "$WORK" <<'PYEOF'
@@ -23,7 +23,7 @@ import json, sys
 port, work = int(sys.argv[1]), sys.argv[2]
 cfg = {
     "plcs": [{"index": 1, "ip": "127.0.0.1", "port": port, "unitId": 1, "byteOrder": "high", "timeoutMs": 3000, "lastSeq": 0}],
-    "hsms": {"listenPort": 5000, "mdln": "BUFFERC", "softRev": "0.1.0", "t3Ms": 45000},
+    "hsms": {"listenPort": 5100, "mdln": "BUFFERC", "softRev": "0.1.0", "t3Ms": 45000},
     "pollIntervalMs": 200, "echoTimeoutMs": 1000, "echoRetryCount": 1,
     "logFile": "scene.log", "webPort": 0,
 }

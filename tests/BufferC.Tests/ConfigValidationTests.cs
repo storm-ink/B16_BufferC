@@ -33,7 +33,7 @@ public class ConfigValidationTests
     [Fact]
     public void IndexOutOfRange_Detected()
     {
-        var cfg = Cfg(new PlcConfig { Index = 16, Ip = "192.168.1.10", Port = 502 });
+        var cfg = Cfg(new PlcConfig { Index = 10, Ip = "192.168.1.10", Port = 502 });
         Assert.Contains(BufferCConfig.Validate(cfg), e => e.Contains("越界"));
     }
 

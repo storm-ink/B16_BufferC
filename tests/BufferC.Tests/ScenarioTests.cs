@@ -115,11 +115,15 @@ public sealed class ScenarioTests : IAsyncLifetime
     [Fact]
     public async Task Scenario05_ScanHandshake_Reports501_201()
     {
+        // 扫码握手 → 501 CarrierIDRead（IDReadStatus=0）+ 201（UNK 失败路径已随 BCR NG 取消，501 事件保留）
         _plc.TriggerScan(2, "SCANCODE01");
         var ev501 = await _mcs.WaitForEventAsync(501);
         var ev201 = await _mcs.WaitForEventAsync(201);
         Assert.NotNull(ev501);
         Assert.NotNull(ev201);
+        var l = ev501!.Items()[0].Children!;
+        var rpt = l[2].Children![0].Children![1];                        // RPT5: A id, A loc, U2 status
+        Assert.Equal((uint)0, rpt.Children![2].AsUInt());                // IDReadStatus=0
         Assert.Equal((ushort)0, _plc.GetReg(340));           // 握手已应答
         Assert.Equal("SCANCODE01", _plc.GetCarrierId(2));    // 已写入 PLC 存储区
     }
@@ -205,35 +209,36 @@ public sealed class ScenarioTests : IAsyncLifetime
     [Fact]
     public async Task Scenario12_CarrierRemoved_203()
     {
-        // 取走路径区分（A1 已确认）：1→0 直跳 = 人工取走 → HandoffType=MANUAL；经 3→0 才报 AGV
+        // 取走路径：1→0 直跳与经 3→0 都报 203，RPT2=载具ID+位置（MCS 现场约定 2026-08-17）
         _plc.SetCarrierId(2, "CARRIER002");
         _plc.SetStationState(2, 2);
         await Task.Delay(200);
         _plc.SetStationState(2, 1);                                      // 放入 → 204
         var e204 = await _mcs.WaitForEventAsync(204);
         Assert.NotNull(e204);
-        _plc.SetStationState(2, 0);                                      // 直跳取出 → 203 MANUAL
+        _plc.SetStationState(2, 0);                                      // AGV 路径直跳取出（1→0）→ 203
         var e203 = await _mcs.WaitForEventAsync(203);
         Assert.NotNull(e203);
         var l = e203!.Items()[0].Children!;
-        var rpt = l[2].Children![0].Children![1];                        // RPT2: A id, A HandoffType
-        Assert.Equal("MANUAL", rpt.Children![1].AsString());
+        var rpt = l[2].Children![0].Children![1];                        // RPT2: A id, A CarrierLoc（MCS 现场约定）
+        Assert.Equal("BUFFER01_02", rpt.Children![1].AsString());
     }
 
     [Fact]
-    public async Task Scenario13_MultiUnitSameAlarm_Dedup()
+    public async Task Scenario13_MultiUnitSameAlarm_EachUnitFullFlow()
     {
-        // spec 2.2.2：同告警多单位 → 102 一次 + 402 逐单位
+        // 现场约定 2026-08-17：每个单位告警独立走 2.2.1 完整流程（不去重）——
+        // 同告警 2 单位 → 102×2 + 402×2；清除 → 101×2 + 401×2
         _plc.SetStationAlarm(1, 5);
         await Task.Delay(200);
         _plc.SetStationAlarm(2, 5);
-        Assert.Equal(1, await _mcs.WaitForEventCountAsync(102, 1));
+        Assert.Equal(2, await _mcs.WaitForEventCountAsync(102, 2));
         Assert.Equal(2, await _mcs.WaitForEventCountAsync(402, 2));
-        // 清除：最后一个单位清除时才发 101
+        // 清除：每单位独立发 101 + 401
         _plc.SetStationAlarm(1, 0);
         await Task.Delay(200);
         _plc.SetStationAlarm(2, 0);
-        Assert.Equal(1, await _mcs.WaitForEventCountAsync(101, 1));
+        Assert.Equal(2, await _mcs.WaitForEventCountAsync(101, 2));
         Assert.Equal(2, await _mcs.WaitForEventCountAsync(401, 2));
     }
 
@@ -1046,8 +1051,8 @@ public sealed class ScenarioTests : IAsyncLifetime
             await Task.Delay(300);
             plc.SetStationState(1, 1);
             var deadline = Environment.TickCount64 + 10000;
-            while (!agvc.Requests.Any(r => r.Path == "/api/hsmsRpc/queryMachines") && Environment.TickCount64 < deadline) await Task.Delay(50);
-            var q = agvc.Requests.First(r => r.Path == "/api/hsmsRpc/queryMachines");
+            while (!agvc.Requests.Any(r => r.Path == "/mpms/api/hsmsRpc/queryMachines") && Environment.TickCount64 < deadline) await Task.Delay(50);
+            var q = agvc.Requests.First(r => r.Path == "/mpms/api/hsmsRpc/queryMachines");
             using (var doc = JsonDocument.Parse(q.Body))
                 Assert.Equal("10001", doc.RootElement.GetProperty("cmsIndex").GetString());
 
@@ -1060,10 +1065,10 @@ public sealed class ScenarioTests : IAsyncLifetime
 
             // 变化即推：201（带 ID）触发 pushDeviceStatusInfo，trayId 为刚写入的货物 ID
             var deadline3 = Environment.TickCount64 + 10000;
-            while (!agvc.Requests.Any(r => r.Path == "/api/hsmsRpc/pushDeviceStatusInfo"
+            while (!agvc.Requests.Any(r => r.Path == "/mpms/api/hsmsRpc/pushDeviceStatusInfo"
                 && JsonDocument.Parse(r.Body).RootElement.GetProperty("status")[0].GetProperty("trayId").GetString() == "AGV001")
                 && Environment.TickCount64 < deadline3) await Task.Delay(50);
-            Assert.Contains(agvc.Requests, r => r.Path == "/api/hsmsRpc/pushDeviceStatusInfo"
+            Assert.Contains(agvc.Requests, r => r.Path == "/mpms/api/hsmsRpc/pushDeviceStatusInfo"
                 && JsonDocument.Parse(r.Body).RootElement.GetProperty("status")[0].GetProperty("trayId").GetString() == "AGV001");
             mcs.Dispose();
         }
@@ -1107,15 +1112,15 @@ public sealed class ScenarioTests : IAsyncLifetime
             while (plc.GetCarrierId(1) == "" && Environment.TickCount64 < deadline) await Task.Delay(50);
             Assert.Equal("SCANWIN1", plc.GetCarrierId(1));
             await Task.Delay(1500);                              // 越过窗口期
-            Assert.DoesNotContain(agvc.Requests, r => r.Path == "/api/hsmsRpc/queryMachines");  // 扫码路径接管，未查询（204/501 的状态推送仍会发生）
+            Assert.DoesNotContain(agvc.Requests, r => r.Path == "/mpms/api/hsmsRpc/queryMachines");  // 扫码路径接管，未查询（204/501 的状态推送仍会发生）
 
             // 变体B：无握手的站口 → 窗口到期后出站查询 queryMachines
             plc.SetStationState(2, 2);
             await Task.Delay(300);
             plc.SetStationState(2, 1);
             var deadline2 = Environment.TickCount64 + 5000;
-            while (!agvc.Requests.Any(r => r.Path == "/api/hsmsRpc/queryMachines") && Environment.TickCount64 < deadline2) await Task.Delay(50);
-            var qs = agvc.Requests.Where(r => r.Path == "/api/hsmsRpc/queryMachines").ToList();
+            while (!agvc.Requests.Any(r => r.Path == "/mpms/api/hsmsRpc/queryMachines") && Environment.TickCount64 < deadline2) await Task.Delay(50);
+            var qs = agvc.Requests.Where(r => r.Path == "/mpms/api/hsmsRpc/queryMachines").ToList();
             Assert.Single(qs);
             using (var doc = JsonDocument.Parse(qs[0].Body))
                 Assert.Equal("10002", doc.RootElement.GetProperty("cmsIndex").GetString());
@@ -1153,8 +1158,8 @@ public sealed class ScenarioTests : IAsyncLifetime
                 await Task.Delay(300);
                 plc.SetStationState(1, 1);
                 var deadline = Environment.TickCount64 + 8000;
-                while (agvc.Requests.Count(r => r.Path == "/api/hsmsRpc/queryMachines") < 3 && Environment.TickCount64 < deadline) await Task.Delay(50);
-                Assert.Equal(3, agvc.Requests.Count(r => r.Path == "/api/hsmsRpc/queryMachines"));  // 1 次 + 2 次重试
+                while (agvc.Requests.Count(r => r.Path == "/mpms/api/hsmsRpc/queryMachines") < 3 && Environment.TickCount64 < deadline) await Task.Delay(50);
+                Assert.Equal(3, agvc.Requests.Count(r => r.Path == "/mpms/api/hsmsRpc/queryMachines"));  // 1 次 + 2 次重试
                 var deadline2 = Environment.TickCount64 + 5000;
                 while (plc.GetCarrierId(1) == "" && Environment.TickCount64 < deadline2) await Task.Delay(50);
                 Assert.Equal("AGVRTY1", plc.GetCarrierId(1));    // 第 3 次成功 → 写 PLC
@@ -1212,9 +1217,9 @@ public sealed class ScenarioTests : IAsyncLifetime
                 await Task.Delay(300);
                 plc3.SetStationState(1, 1);
                 var deadline = Environment.TickCount64 + 5000;
-                while (agvc.Requests.Count(r => r.Path == "/api/hsmsRpc/queryMachines") < 2 && Environment.TickCount64 < deadline) await Task.Delay(50);
+                while (agvc.Requests.Count(r => r.Path == "/mpms/api/hsmsRpc/queryMachines") < 2 && Environment.TickCount64 < deadline) await Task.Delay(50);
                 await Task.Delay(300);                           // 等写入窗口（若有）
-                Assert.Equal(2, agvc.Requests.Count(r => r.Path == "/api/hsmsRpc/queryMachines"));  // 1 次 + 1 次重试
+                Assert.Equal(2, agvc.Requests.Count(r => r.Path == "/mpms/api/hsmsRpc/queryMachines"));  // 1 次 + 1 次重试
                 Assert.Equal("", plc3.GetCarrierId(1));          // 无 ID 可写
                 Assert.Empty(svc.Alarms);                        // 不告警
             }
@@ -1262,13 +1267,13 @@ public sealed class ScenarioTests : IAsyncLifetime
             Assert.NotNull(await mcs.WaitForEventAsync(201));
             Assert.Equal("MAN5001", plc.GetCarrierId(1));
 
-            // 3) 人工取走 5→0 直跳：203 HandoffType=MANUAL
+            // 3) 人工取走 5→0 直跳：202 CarrierRemoveCompleted（RPT2=载具ID+位置；1.4.4 流程）
             plc.SetStationState(1, 0);
-            var e203m = await mcs.WaitForEventAsync(203);
-            var rptM = e203m!.Items()[0].Children![2].Children![0].Children![1];
-            Assert.Equal("MANUAL", rptM.Children![1].AsString());
+            var e202m = await mcs.WaitForEventAsync(202);
+            var rptM = e202m!.Items()[0].Children![2].Children![0].Children![1];
+            Assert.Equal("BUFFER01_01", rptM.Children![1].AsString());
 
-            // 4) 人工放 + AGV 取：0→5 → 5→3（无事件）→ 3→0：203 HandoffType=AGV
+            // 4) 人工放 + AGV 取：0→5 → 5→3（无事件）→ 3→0：203 RPT2=载具ID+位置
             plc.SetStationState(2, 5);
             Assert.NotNull(await mcs.WaitForEventAsync(201));
             plc.SetStationState(2, 3);
@@ -1276,7 +1281,7 @@ public sealed class ScenarioTests : IAsyncLifetime
             plc.SetStationState(2, 0);
             var e203a = await mcs.WaitForEventAsync(203);
             var rptA = e203a!.Items()[0].Children![2].Children![0].Children![1];
-            Assert.Equal("AGV", rptA.Children![1].AsString());
+            Assert.Equal("BUFFER01_02", rptA.Children![1].AsString());
 
             // 5) 异常跳变只记日志不上报：0→2→1（204 正常）→ 1→5 无 201 → 5→1 无 204 → 1→0 收尾
             plc.SetStationState(3, 2);
@@ -1336,15 +1341,15 @@ public sealed class ScenarioTests : IAsyncLifetime
             // 3) 控制状态变化（34~49）→ 302 → 推 service=1（原始寄存器值）
             plc.SetStationAvail(1, 1);
             Assert.NotNull(await mcs.WaitForEventAsync(302));
-            // 4) 人工取走 5→0 → 203 → 推 present=0（无货 trayId 恒空）
+            // 4) 人工取走 5→0 → 202 → 推 present=0（无货 trayId 恒空）
             plc.SetStationState(1, 0);
-            Assert.NotNull(await mcs.WaitForEventAsync(203));
+            Assert.NotNull(await mcs.WaitForEventAsync(202));
 
             // 等推送落库（推送为 Task.Run 异步）：5 个事件 → 4 条推送
             // （D3 扫码异步化后：501/201 由命令工作线程统一推一次，旧行为是两事件各推一次相同内容）
             var deadline = Environment.TickCount64 + 10000;
             while (agvc.Requests.Count < 4 && Environment.TickCount64 < deadline) await Task.Delay(50);
-            var pushes = agvc.Requests.Where(r => r.Path == "/api/hsmsRpc/pushDeviceStatusInfo").ToList();
+            var pushes = agvc.Requests.Where(r => r.Path == "/mpms/api/hsmsRpc/pushDeviceStatusInfo").ToList();
             Assert.Equal(4, pushes.Count);
 
             var sigs = pushes.Select(p =>
@@ -1357,6 +1362,15 @@ public sealed class ScenarioTests : IAsyncLifetime
             Assert.Contains(("0", "1", "SCANP1"), sigs);     // 扫码补 ID
             Assert.Contains(("1", "1", "SCANP1"), sigs);     // 控制状态=1（原始寄存器值）
             Assert.Contains(("1", "0", ""), sigs);           // 取走（无货 trayId 恒空）
+
+            // reqCode：每次请求随机值、长度≤32 且互不相同（现场要求 2026-08-17）
+            var reqCodes = pushes.Select(p =>
+            {
+                using var d = JsonDocument.Parse(p.Body);
+                return d.RootElement.GetProperty("reqCode").GetString()!;
+            }).ToList();
+            Assert.All(reqCodes, rc => Assert.True(rc.Length >= 1 && rc.Length <= 32));
+            Assert.Equal(reqCodes.Count, reqCodes.Distinct().Count());
             foreach (var p in pushes)
             {
                 using var d = JsonDocument.Parse(p.Body);
@@ -1542,11 +1556,11 @@ public sealed class ScenarioTests : IAsyncLifetime
                     string body = await new StreamReader(ctx.Request.InputStream).ReadToEndAsync();
                     lock (_lock) _requests.Add((ctx.Request.Url!.AbsolutePath, body));
                     // FailCount 只作用于 queryMachines（推送请求不消耗失败计数，保证重试断言确定性）
-                    bool fail = _failCount > 0 && ctx.Request.Url!.AbsolutePath == "/api/hsmsRpc/queryMachines";
+                    bool fail = _failCount > 0 && ctx.Request.Url!.AbsolutePath == "/mpms/api/hsmsRpc/queryMachines";
                     if (fail) Interlocked.Decrement(ref _failCount);
                     string code = fail ? "1" : QueryCode;
                     string resp;
-                    if (ctx.Request.Url!.AbsolutePath == "/api/hsmsRpc/pushDeviceStatusInfo")
+                    if (ctx.Request.Url!.AbsolutePath == "/mpms/api/hsmsRpc/pushDeviceStatusInfo")
                         resp = $"{{\"code\":\"{code}\",\"data\":\"\",\"interrupt\":false,\"message\":\"{(fail ? "busy" : "ok")}\",\"reqCode\":\"REQ001\"}}";
                     else
                     {

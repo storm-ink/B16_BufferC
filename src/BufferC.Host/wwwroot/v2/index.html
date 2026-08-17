@@ -6,8 +6,8 @@
 <title>BufferC 缓冲库监控界面</title>
 <script>try{var t=localStorage.getItem('bc-theme');if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}</script>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%232a78d6'/%3E%3Ctext x='8' y='12' font-size='10' text-anchor='middle' fill='white'%3EB%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="css/app.css">
-<link rel="stylesheet" href="css/screen.css">
+<link rel="stylesheet" href="css/app.css?v=20260817f">
+<link rel="stylesheet" href="css/screen.css?v=20260817f">
 </head>
 <body>
 
@@ -95,7 +95,7 @@
   </div>
 </div>
 
-<!-- 页 5：日志 -->
+<!-- 页：日志 -->
 <div id="page-logs" class="page">
   <div class="card">
     <h2>运行日志 <span class="muted-sm" id="logState"></span></h2>
@@ -115,6 +115,14 @@
       <button data-action="toggle-log-pause" id="logPauseBtn">暂停</button>
     </div>
     <div class="logs" id="logs"></div>
+  </div>
+</div>
+
+<!-- 页：流程日志（审计：SECS 收发摘要/命令生命周期/告警/对账，全量不过滤） -->
+<div id="page-flowlog" class="page">
+  <div class="card">
+    <h2>流程日志（审计） <span class="muted-sm">SECS 收发摘要 / 命令全生命周期 / 告警 / 对账——现场留档证据，全量显示不过滤</span></h2>
+    <div class="logs" id="auditLogs"></div>
   </div>
 </div>
 
@@ -280,15 +288,15 @@
   </div>
 </div>
 
-<script src="js/util.js"></script>
-<script src="js/protocol.js"></script>
-<script src="js/regtable.js"></script>
-<script src="js/logs.js"></script>
-<script src="js/events.js"></script>
-<script src="js/status.js"></script>
-<script src="js/plctest.js"></script>
-<script src="js/agvctest.js"></script>
-<script src="js/mcstest.js"></script>
-<script src="js/main.js"></script>
+<script src="js/util.js?v=20260817f"></script>
+<script src="js/protocol.js?v=20260817f"></script>
+<script src="js/regtable.js?v=20260817f"></script>
+<script src="js/logs.js?v=20260817f"></script>
+<script src="js/events.js?v=20260817f"></script>
+<script src="js/status.js?v=20260817f"></script>
+<script src="js/plctest.js?v=20260817f"></script>
+<script src="js/agvctest.js?v=20260817f"></script>
+<script src="js/mcstest.js?v=20260817f"></script>
+<script src="js/main.js?v=20260817f"></script>
 </body>
 </html>

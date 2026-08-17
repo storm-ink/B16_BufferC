@@ -34,6 +34,7 @@ public sealed class PlcPoller
         _app = app;
         _engine = engine;
         _sink = sink;
+        _snap.StationCount = Math.Min(RegisterMap.StationsPerPlc, cfg.Stations);   // 逻辑站口数（寄存器布局恒 16 站空间）
         _client = new ModbusTcpClient(cfg.Ip, cfg.Port, cfg.UnitId, cfg.TimeoutMs);
         // Modbus 帧级日志（trace 级，logModbusFrames 配置控制；命令通道共用同一 client，命令帧自动覆盖）
         _client.Frame += (isTx, data) =>

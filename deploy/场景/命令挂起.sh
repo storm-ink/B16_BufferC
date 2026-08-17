@@ -17,7 +17,7 @@ sleep 2
 start_bufferc
 
 ( printf 'sleep 8000\ninstall WAFER-301 Buffer1_Port3\nwait-ceid 201 3000\nsleep 5000\nq\n' \
-    | "$REPO/publish/simulator/BufferC.Simulator.exe" mcs --mcs-port 5000 \
+    | "$REPO/publish/simulator/BufferC.Simulator.exe" mcs --mcs-port 5100 \
     > "$WORK/mcs.log" 2>&1 ) &
 MCS_PID=$!
 wait $PLC_PID $MCS_PID

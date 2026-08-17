@@ -33,18 +33,13 @@ async function agvManualPush() {
     loadAgvcTraffic();
   } catch (e) { el.innerHTML = `<span class="fail-txt">请求失败: ${esc(e)}</span>`; }
 }
-function agvEnter(ev, which) {
-  if (ev.key !== 'Enter') return;
-  ev.preventDefault();
-  if (which === 'q') agvManualQuery(); else agvManualPush();
-}
-
 // 发送记录（手动+自动全量，原始 JSON 原文展示）+ 统计行
 async function loadAgvcTraffic() {
   const box = document.getElementById('tbl-agvc');
   try {
-    const d = await (await fetch('/api/agvc/traffic?tail=50')).json();
-    const t = d.traffic || [];
+    const res = await apiGet('/api/agvc/traffic?tail=50');
+    if (!res.fresh) return;   // 过期响应丢弃
+    const t = res.data.traffic || [];
     clearError(box);
     const qOk = t.filter(x => x.type === 'queryMachines' && x.ok).length;
     const qFail = t.filter(x => x.type === 'queryMachines' && !x.ok).length;

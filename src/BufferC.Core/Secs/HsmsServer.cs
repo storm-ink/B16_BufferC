@@ -24,6 +24,7 @@ public sealed record AlarmStatus(string UnitId, uint AlarmId, string AlarmText, 
 /// <summary>
 /// HSMS-SS Passive 服务器（端口 5000），处理 S1/S2/S5/S6/S9 消息。
 /// 自研实现（E37.1 帧 + E5 编解码），GEM 状态机应用层自建。
+/// 单连接 + 先连者胜（现场主备 2026-08-17）：已有 MCS 连接时，新连接请求直接拒绝（关闭）。
 /// </summary>
 public sealed class HsmsServer : IDisposable
 {
@@ -34,7 +35,7 @@ public sealed class HsmsServer : IDisposable
     private TcpClient? _client;
     private NetworkStream? _stream;
     private readonly object _sendLock = new();
-    private ushort _sessionId = 0xFFFF;              // E37 会话：以最后收到的消息为准回显
+    private ushort _sessionId = 1;                   // E37 会话号：写死 0001（MCS 现场约定 2026-08-17；MCS 不发 Select 时也能保证正确）
     private uint _dataId = 1;
     private uint _sysBytes = 1;
     private readonly object _outstandingLock = new();   // W 位事务表三线程访问（发送加/接收删/T3 监控遍历删）：统一加锁，防 Dictionary 并发损坏
@@ -140,7 +141,14 @@ public sealed class HsmsServer : IDisposable
                 var client = await _listener!.AcceptTcpClientAsync(ct);
                 lock (_sendLock)
                 {
-                    _client?.Dispose();
+                    if (_client?.Connected == true)
+                    {
+                        // 现场主备（2026-08-17）：先连者胜——已有连接时拒绝新连接（直接关闭，第一台不受影响）
+                        var peer = client.Client.RemoteEndPoint?.ToString() ?? "";
+                        Log?.Invoke("HSMS", $"MCS 连接拒绝（已有连接 {PeerEndpoint}）: {peer}", LogLevel.Warn);
+                        client.Dispose();
+                        continue;
+                    }
                     _client = client;
                     _stream = client.GetStream();
                 }
@@ -209,7 +217,7 @@ public sealed class HsmsServer : IDisposable
     // ---------- 分发 ----------
     private void Dispatch(HsmsMessage m)
     {
-        _sessionId = m.SessionId;    // E37：回显最后收到的会话号（Select.req 的 FFFF / 数据消息的实际会话）
+        // 会话号不随对端变化：固定 0001（MCS 现场约定 2026-08-17；之前回显对端导致 Select 后带 FFFF 被 MCS 判错）
         if (m.Stream == 0)
         {
             switch (m.Function)

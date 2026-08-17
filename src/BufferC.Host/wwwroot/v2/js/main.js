@@ -1,24 +1,24 @@
 // main.js — 全局状态 + 页签/侧栏/设置 + 页面激活 + 轮询调度（必须最后加载：顶层 let 状态 + kickoff）
-// 导出: ST, logFilter/logPaused/logLevel/logWord/pendingCmd/pendingDbg, lastRenderedSeq/needFullRerender,
+// 导出: ST, logFilter/logPaused/logLevel/logWord, lastRenderedSeq/needFullRerender,
 //       lastStatus, curPage, overviewKey, detPlc/detBuilt, openPage, closeTab, activatePage, setTheme
-const ST = { 0: '空', 1: '有货', 2: '正放', 3: '正取', 4: '故障', 5: '人工有货' };
-let logFilter = '', logPaused = false, logLevel = '', logWord = '', pendingCmd = null, pendingDbg = null;
+const ST = { 0: '空', 1: '有货', 2: '正放', 3: '正取', 4: '其他', 5: '人工有货' };
+let logFilter = '', logPaused = false, logLevel = '', logWord = '';
 let lastRenderedSeq = 0, needFullRerender = true;
 let lastStatus = null;
 let curPage = 'overview';
 let overviewKey = '';
 let detPlc = null, detBuilt = false;
 
-// ---------- 页面元信息（分组/标签/固定） ----------
+// ---------- 页面元信息（分组/标签/固定；命令页已按用户要求移除） ----------
 const PAGE_META = [
   { name: 'overview', label: '总览', group: '监控', pinned: true },
-  { name: 'plcdetail', label: 'PLC 详情', group: '监控' },
+  { name: 'plcdetail', label: '设备详情', group: '监控' },
   { name: 'events', label: '事件/告警', group: '监控' },
   { name: 'plctest', label: 'PLC 单机测试', group: '联调' },
   { name: 'agvctest', label: 'AGVC 联调', group: '联调' },
   { name: 'mcstest', label: 'MCS 联调', group: '联调' },
-  { name: 'cmds', label: '命令', group: '工具' },
   { name: 'logs', label: '日志', group: '工具' },
+  { name: 'flowlog', label: '流程日志', group: '工具' },
 ];
 const pageLabel = name => (PAGE_META.find(m => m.name === name) || {}).label || name;
 let enabledPages = PAGE_META.map(m => m.name);
@@ -35,11 +35,13 @@ function activatePage(name) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   const el = document.getElementById('page-' + name);
   if (el) el.classList.add('active');
+  if (name === 'overview') invRefresh();
   if (name === 'plcdetail') { detBuilt = false; loadStatus(); }
   if (name === 'plctest') loadStatus();
   if (name === 'events') loadActivity();
   if (name === 'logs') { needFullRerender = true; loadLogs(); }
-  if (name === 'mcstest') { mcsBuild(); mcsRefresh(lastStatus); invRefresh(); }
+  if (name === 'flowlog') { needFullRerender = true; loadAuditLogs(); }
+  if (name === 'mcstest') { mcsBuild(); mcsRefresh(lastStatus); }
   try { localStorage.setItem('bc-active', name); } catch (e) {}
   renderTabs();
   renderSidebar();
@@ -86,12 +88,69 @@ function renderSettings() {
     `<div class="set-item"><span>${m.label}${m.pinned ? '（固定）' : ''}</span>` +
     `<label class="switch"><input type="checkbox" data-page="${m.name}" ${m.pinned ? 'disabled' : ''} ${enabledPages.includes(m.name) ? 'checked' : ''}><span class="slider"></span></label></div>`).join('') +
     `<div class="set-item"><span>深色主题</span>` +
-    `<label class="switch"><input type="checkbox" data-action="set-theme" ${document.documentElement.getAttribute('data-theme') === 'dark' ? 'checked' : ''}><span class="slider"></span></label></div>`;
+    `<label class="switch"><input type="checkbox" data-action="set-theme" ${document.documentElement.getAttribute('data-theme') === 'dark' ? 'checked' : ''}><span class="slider"></span></label></div>` +
+    `<div class="set-item"><span>大屏模式（全屏看板）</span><button data-action="enter-screen">进入</button></div>`;
 }
 
 function setTheme(dark) {
   document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
   try { localStorage.setItem('bc-theme', dark ? 'dark' : 'light'); } catch (e) {}
+}
+
+// ---------- 大屏模式（kiosk：全屏 + 隐藏常规布局，Esc 退全屏时同步退出） ----------
+let screenMode = false;
+function enterScreen() {
+  screenMode = true;
+  document.body.setAttribute('data-screen', '1');
+  if (lastStatus) renderScreenDash(lastStatus);
+  renderScreenTicker();
+  const el = document.documentElement;
+  if (el.requestFullscreen) el.requestFullscreen().catch(() => {});
+  const box = document.getElementById('settingsBox');
+  if (box) box.style.display = 'none';
+}
+function exitScreen() {
+  screenMode = false;
+  document.body.removeAttribute('data-screen');
+  if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {});
+}
+document.addEventListener('fullscreenchange', () => {
+  if (!document.fullscreenElement && screenMode) exitScreen();
+});
+
+// 大屏看板渲染（数据全部复用 loadStatus 快照，无新端点）
+function renderScreenDash(s) {
+  const unacked = s.alarms.filter(a => !a.acked).length;
+  const hero = document.getElementById('dashAlarm');
+  hero.textContent = String(unacked);
+  hero.className = 'dash-hero-value' + (unacked ? ' crit' : '');
+  document.getElementById('dashAlarmNote').textContent = unacked ? '需要确认' : '一切正常';
+  const online = s.plcs.filter(p => p.connected).length;
+  const occ = s.plcs.reduce((n, p) => n + p.stations.filter(x => x.state === 1 || x.state === 5).length, 0);
+  document.getElementById('dash-kpis').innerHTML =
+    `<div class="dash-kpi"><div class="dash-kpi-value ${s.plcs.length - online ? 'off' : 'ok'}">${online}/${s.plcs.length}</div><div class="dash-kpi-label">PLC 在线</div></div>` +
+    `<div class="dash-kpi"><div class="dash-kpi-value">${occ}</div><div class="dash-kpi-label">有货站口</div></div>` +
+    `<div class="dash-kpi"><div class="dash-kpi-value">${fmtDur(Date.now() - new Date(s.system.startedAt).getTime())}</div><div class="dash-kpi-label">运行时长</div></div>` +
+    `<div class="dash-kpi"><div class="dash-kpi-value ${s.hsmsConnected ? 'ok' : 'off'}">${s.hsmsConnected ? 'ONLINE' : 'OFFLINE'}</div><div class="dash-kpi-label">MCS</div></div>`;
+  document.getElementById('dash-plcs').innerHTML = s.plcs.map(p =>
+    `<div class="dash-plc"><div class="dash-plc-title">${p.name || p.index + ' 号 Buffer'}${p.connected ? '' : '（离线）'}</div><div class="dash-grid">` +
+    p.stations.map(x => `<div class="dash-cell st${x.state >= 5 ? 99 : x.state}">${STATE_ICON[x.state] || ''}${x.station}</div>`).join('') +
+    `</div></div>`).join('');
+}
+
+// 底部告警/事件跑马（3s 轮询，appendCapped 上限）
+async function renderScreenTicker() {
+  const box = document.getElementById('dash-ticker');
+  try {
+    const [ev, al] = await Promise.all([apiGet('/api/events?tail=4'), apiGet('/api/alarms')]);
+    if (!ev.fresh) return;
+    const items = [
+      ...ev.data.map(e => `${fmtTime(e.time)} CEID ${e.ceid} ${esc(e.description)}`),
+      ...al.data.map(a => `告警 ${esc(a.alarmText)}（${a.acked ? '已确认' : '未确认'}）`),
+    ];
+    box.innerHTML = '';
+    for (const t of items.slice(0, 6)) appendCapped(box, `<span class="dash-tick">${t}</span>`, 6);
+  } catch (e) { reportError(box, e); }
 }
 
 function togglePageSetting(name, on) {
@@ -115,7 +174,6 @@ const ACTIONS = {
   'set-log-word': arg => setLogWord(arg),
   'set-log-level': arg => setLogLevel(arg),
   'toggle-log-pause': () => toggleLogPause(),
-  'do-send-cmd': arg => doSendCmd(arg === '1'),
   'plct-set-cmd': arg => plctSetCmd(+arg),
   'cim-state': arg => cimState(arg === '1'),
   'ack': arg => ack(arg),
@@ -129,6 +187,8 @@ const ACTIONS = {
     const b = document.querySelector('#page-events .tabbar [data-action="switch-tab"][data-arg="alarms"]');
     if (b) switchTab('alarms', b);
   },
+  'enter-screen': () => enterScreen(),
+  'exit-screen': () => exitScreen(),
 };
 
 function runClickAction(act, arg, el) {
@@ -194,12 +254,32 @@ document.addEventListener('keydown', e => {
   const active = loadJSON('bc-active', 'overview');
   renderSidebar();
   activatePage(openTabs.includes(active) ? active : 'overview');
+  if (new URLSearchParams(location.search).get('screen') === '1') enterScreen();   // /v2/?screen=1 深链
 })();
 
-// ---------- 轮询调度（status 常开；活动/日志/AGVC 仅激活页） ----------
-loadStatus();
-setInterval(loadStatus, 1500);
-setInterval(() => { if (curPage === 'events') loadActivity(); }, 3000);
-setInterval(() => { if (curPage === 'logs') loadLogs(); }, 2000);
-setInterval(() => { if (curPage === 'agvctest') loadAgvcTraffic(); }, 2000);
-setInterval(() => { if (curPage === 'mcstest') { loadMcsTraffic(); loadMcsEvents(); } }, 2000);
+// ---------- 轮询调度（status 常开；活动/日志/AGVC 仅激活页；页面隐藏时暂停） ----------
+let pollTimers = [];
+function startPolling() {
+  loadStatus();
+  pollTimers = [
+    setInterval(loadStatus, 1500),
+    setInterval(() => { if (curPage === 'events') loadActivity(); }, 3000),
+    setInterval(() => { if (curPage === 'logs') loadLogs(); }, 2000),
+    setInterval(() => { if (curPage === 'flowlog') loadAuditLogs(); }, 2000),
+    setInterval(() => { if (curPage === 'agvctest') loadAgvcTraffic(); }, 2000),
+    setInterval(() => { if (curPage === 'mcstest') { loadMcsTraffic(); loadMcsEvents(); } }, 2000),
+    setInterval(() => { if (screenMode) renderScreenTicker(); }, 3000),
+  ];
+}
+function stopPolling() { pollTimers.forEach(clearInterval); pollTimers = []; }
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { stopPolling(); return; }
+  // 恢复可见：立即刷新当前页 + 重启定时器
+  if (curPage === 'events') loadActivity();
+  if (curPage === 'logs') { needFullRerender = true; loadLogs(); }
+  if (curPage === 'flowlog') { needFullRerender = true; loadAuditLogs(); }
+  if (curPage === 'agvctest') loadAgvcTraffic();
+  if (curPage === 'mcstest') { loadMcsTraffic(); loadMcsEvents(); }
+  startPolling();
+});
+startPolling();

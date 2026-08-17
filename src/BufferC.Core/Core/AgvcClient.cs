@@ -54,7 +54,7 @@ public sealed class AgvcClient : IDisposable
         {
             try
             {
-                using var resp = await _http.PostAsync("/api/hsmsRpc/queryMachines",
+                using var resp = await _http.PostAsync("/mpms/api/hsmsRpc/queryMachines",
                     new StringContent(payload, Encoding.UTF8, "application/json"), ct);
                 string text = await resp.Content.ReadAsStringAsync(ct);
                 lastResp = text;
@@ -91,9 +91,10 @@ public sealed class AgvcClient : IDisposable
     public async Task<bool> PushStatusAsync(int plc, int station, ushort serviceReg, bool present, string trayId, CancellationToken ct)
     {
         string cmsIndex = (plc * _cfg.CmsIndexBase + station).ToString();
-        // 现场确认：去掉 inputRequest/outputRequest 两个字段（不再发送）
+        // 现场确认：去掉 inputRequest/outputRequest 两个字段（不再发送）；reqCode 每次请求随机值、长度≤32（时间戳+随机数，现场要求 2026-08-17）
         var body = new
         {
+            reqCode = $"{DateTime.Now:yyyyMMddHHmmssfff}{Random.Shared.Next(1000, 9999)}",
             status = new object[]
             {
                 new
@@ -113,7 +114,7 @@ public sealed class AgvcClient : IDisposable
         {
             try
             {
-                using var resp = await _http.PostAsync("/api/hsmsRpc/pushDeviceStatusInfo",
+                using var resp = await _http.PostAsync("/mpms/api/hsmsRpc/pushDeviceStatusInfo",
                     new StringContent(payload, Encoding.UTF8, "application/json"), ct);
                 string text = await resp.Content.ReadAsStringAsync(ct);
                 lastResp = text;

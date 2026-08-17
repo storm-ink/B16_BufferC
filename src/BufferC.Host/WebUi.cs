@@ -109,7 +109,8 @@ public static class WebUi
         app.MapPost("/api/debug/cmd", (HttpContext ctx, DebugCmdReq req) =>
         {
             // 命令码放开（0~65535 任意，JSON 反序列化 ushort 自动挡越界）；仅 1=写入ID 会先写 ID 区
-            if (req.Station < 1 || req.Station > 16)
+            // 粗校验 1~16（寄存器布局上限）；该机台实际站口数（8/16）由 DebugSendCmd 服务侧校验
+            if (req.Station is < 1 or > 16)
                 return Json(ctx, null, StatusCodes.Status400BadRequest);
             var r = service.DebugSendCmd(req.Plc, req.Station, req.Cmd,
                 req.Cmd == RegisterMap.CmdWrite ? req.CarrierId : null);

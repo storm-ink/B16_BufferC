@@ -17,7 +17,7 @@ sleep 2
 start_bufferc
 
 ( printf 'sleep 9000\nwait-ceid 204 10000\nwait-ceid 203 10000\nq\n' \
-    | "$REPO/publish/simulator/BufferC.Simulator.exe" mcs --mcs-port 5000 \
+    | "$REPO/publish/simulator/BufferC.Simulator.exe" mcs --mcs-port 5100 \
     > "$WORK/mcs.log" 2>&1 ) &
 MCS_PID=$!
 wait $PLC_PID $MCS_PID

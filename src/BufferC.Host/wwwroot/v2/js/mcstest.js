@@ -62,27 +62,28 @@ function mcsBuild() {
   const sel = document.getElementById('mcsPlc');
   const plcs = lastStatus ? lastStatus.plcs || [] : [];
   if (sel.options.length === 0)
-    sel.innerHTML = plcs.map(p => `<option value="${p.index}">${p.index} 号 Buffer（${p.connected ? '在线' : '离线'}）</option>`).join('');
+    sel.innerHTML = plcs.map(p => `<option value="${p.index}">${p.name || p.index + ' 号 Buffer'}（${p.connected ? '在线' : '离线'}）</option>`).join('');
   if (!sel.value && plcs.length) sel.value = plcs[0].index;
   if (mcsBuilt) return;
 
-  // 快速区 0~49（原始寄存器表：地址 | 值 | 说明，纯手改）
+  // 快速区 0~49（原始寄存器表：地址 | 值 | 说明，纯手改；行数=该机台逻辑站口数 8/16）
+  const stCnt = lastStatus ? (lastStatus.plcs.find(x => x.index === mcsPlcNum())?.stations.length ?? 16) : 16;
   const fastRows = [{ cells: [{ t: 'raw', attrs: 'class="mono"', v: 0 }, { t: 'm', k: 0 }, { t: 'text', v: 'Buffer 编号' }] },
                     { cells: [{ t: 'raw', attrs: 'class="mono"', v: 1 }, { t: 'm', k: 1 }, { t: 'text', v: '告警汇总' }] }];
-  for (let i = 0; i < 16; i++) fastRows.push({ cells: [{ t: 'raw', attrs: 'class="mono"', v: 2 + i }, { t: 'm', k: 2 + i }, { t: 'text', v: `站口${i + 1} 状态（0空/1有货/2正放/3正取/4故障/5人工有货）` }] });
-  for (let i = 0; i < 16; i++) fastRows.push({ cells: [{ t: 'raw', attrs: 'class="mono"', v: 18 + i }, { t: 'm', k: 18 + i }, { t: 'text', v: `站口${i + 1} 告警码（0=无告警）` }] });
-  for (let i = 0; i < 16; i++) fastRows.push({ cells: [{ t: 'raw', attrs: 'class="mono"', v: 34 + i }, { t: 'm', k: 34 + i }, { t: 'text', v: `站口${i + 1} 可用（0=在服/1=停服）` }] });
+  for (let i = 0; i < stCnt; i++) fastRows.push({ cells: [{ t: 'raw', attrs: 'class="mono"', v: 2 + i }, { t: 'm', k: 2 + i }, { t: 'text', v: `站口${i + 1} 状态（0空/1有货/2正放/3正取/4故障/5人工有货）` }] });
+  for (let i = 0; i < stCnt; i++) fastRows.push({ cells: [{ t: 'raw', attrs: 'class="mono"', v: 18 + i }, { t: 'm', k: 18 + i }, { t: 'text', v: `站口${i + 1} 告警码（0=无告警）` }] });
+  for (let i = 0; i < stCnt; i++) fastRows.push({ cells: [{ t: 'raw', attrs: 'class="mono"', v: 34 + i }, { t: 'm', k: 34 + i }, { t: 'text', v: `站口${i + 1} 可用（0=在服/1=停服）` }] });
   buildRegTable(document.getElementById('tbl-mcs-fast'), { cols: ['地址', '值', '说明'], rows: fastRows });
 
   // ID 区 50~305：文本输入（agtPackAscii 16 字写回）
   const idRows = [];
-  for (let st = 1; st <= 16; st++)
+  for (let st = 1; st <= stCnt; st++)
     idRows.push({ cells: [{ t: 'text', v: `站口${st}` }, { t: 'raw', attrs: 'class="mono"', v: `${50 + (st - 1) * 16}~${65 + (st - 1) * 16}` }, { t: 'mid', k: st }] });
   buildRegTable(document.getElementById('tbl-mcs-id'), { cols: ['站口', '地址', '货物 ID（≤32 字符，回车写回）'], rows: idRows });
 
   // 扫码/握手
   const scanRows = [
-    { cells: [{ t: 'raw', attrs: 'class="mono"', v: 323 }, { t: 'm', k: 323 }, { t: 'text', v: '扫码站口号（1~16）' }] },
+    { cells: [{ t: 'raw', attrs: 'class="mono"', v: 323 }, { t: 'm', k: 323 }, { t: 'text', v: `扫码站口号（1~${stCnt}）` }] },
     { cells: [{ t: 'raw', attrs: 'class="mono"', v: '324~339' }, { t: 'scan' }, { t: 'text', v: '扫码号文本（≤32 字符；BCR NG 用 UNK- 前缀）' }] },
     { cells: [{ t: 'raw', attrs: 'class="mono"', v: 340 }, { t: 'm', k: 340 }, { t: 'text', v: '握手：写 1 = PLC 请求扫码（BufferC 自动应答 0 → 501+201）' }] },
   ];
@@ -90,7 +91,7 @@ function mcsBuild() {
 
   // 只读：回显 + 当前 400
   const echoRows = [{ cells: [{ t: 'raw', attrs: 'class="mono"', v: 306 }, { t: 'r', k: 306 }, { t: 'text', v: '命令编号回显' }] }];
-  for (let i = 0; i < 16; i++)
+  for (let i = 0; i < stCnt; i++)
     echoRows.push({ cells: [{ t: 'raw', attrs: 'class="mono"', v: 307 + i }, { t: 'r', k: 307 + i }, { t: 'text', v: `站口${i + 1} 命令回显` }] });
   echoRows.push({ cells: [{ t: 'raw', attrs: 'class="mono"', v: 400 }, { t: 'id', k: 'mcsCur400', v: '—' }, { t: 'text', v: '命令编号（当前值，401~672 见 PLC 详情页）' }] });
   buildRegTable(document.getElementById('tbl-mcs-echo'), { cols: ['地址', '值', '说明'], rows: echoRows });
@@ -105,9 +106,10 @@ async function mcsRefresh(s) {
     // 快速区值 = 轮询快照（状态/告警/可用/回显/握手全在快照里，1.5s 一次）；编辑中的格子不覆盖
     const v = {};
     v[0] = p.registers.bufferNo; v[1] = p.registers.alarmSummary;
-    for (let i = 0; i < 16; i++) { v[2 + i] = p.stations[i].state; v[18 + i] = p.stations[i].alarm; v[34 + i] = p.stations[i].avail; }
+    const stCnt = p.stations.length;
+    for (let i = 0; i < stCnt; i++) { v[2 + i] = p.stations[i].state; v[18 + i] = p.stations[i].alarm; v[34 + i] = p.stations[i].avail; }
     v[306] = p.registers.echoNo;
-    for (let i = 0; i < 16; i++) v[307 + i] = p.registers.echoStation[i];
+    for (let i = 0; i < stCnt; i++) v[307 + i] = p.registers.echoStation[i];
     v[323] = p.registers.scanStation; v[340] = p.registers.handshake;
     for (const el of document.querySelectorAll('#tbl-mcs-fast [data-m], #tbl-mcs-scan [data-m]')) {
       if (document.activeElement === el) continue;
@@ -129,7 +131,7 @@ async function mcsRefresh(s) {
       let vals = await regRead(plc, 50, 256);
       if (!vals) vals = await readRegBlocks(plc, 50, 256);
       clearError(document.getElementById('tbl-mcs-id'));
-      for (let st = 1; st <= 16; st++) {
+      for (let st = 1; st <= (p ? p.stations.length : 16); st++) {
         const el = document.querySelector(`#tbl-mcs-id [data-mid="${st}"]`);
         if (!el || document.activeElement === el) continue;
         const cur = unpackAscii(vals.slice((st - 1) * 16, st * 16), mcsBo());

@@ -174,7 +174,7 @@ async function renderPlctEcho() {
   document.getElementById('plctBo').textContent = r.byteOrder === 'low' ? '低字节在前' : '高字节在前';
   const st = plctStValid();
   const rows = [{ cells: [{ t: 'text', v: 306 }, { t: 'text', v: r.echoNo }, { t: 'text', v: '命令编号回显' }] }];
-  for (let i = 0; i < 16; i++) {
+  for (let i = 0; i < p.stations.length; i++) {
     const isTarget = !isNaN(st) && i + 1 === st;
     const isOk = plctLastOk && plc === plctLastOk.plc && i + 1 === plctLastOk.station && r.echoStation[i] === plctLastOk.cmd;
     rows.push({ cls: isOk ? 'hl-ok' : isTarget ? 'hl-target' : '', cells: [{ t: 'text', v: 307 + i }, { t: 'text', v: r.echoStation[i] }, { t: 'text', v: `站口${i + 1} 命令回显` }] });

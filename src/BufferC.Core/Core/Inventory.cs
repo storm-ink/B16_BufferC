@@ -29,37 +29,47 @@ public sealed class Inventory : IDisposable
     private readonly object _dbLock = new();                             // 单例连接：所有 SQL 命令串行化（锁序恒为 _lock → _dbLock，不反向）
     private SqliteConnection? _conn;
     private readonly Action<string, string, LogLevel> _log;              // 注入日志（默认 Console 回退，单测 new 不破）
+    private readonly Func<int, int, string> _unitNamer;                  // 单位命名（默认旧 BUFFER 格式）
+    private readonly IReadOnlyList<int>? _stationCounts;                 // 每台站口数（null=全 16）
     private int _writeFailStreak;                                        // SQLite 写失败节流计数
     private DateTime _lastFailLogAt = DateTime.MinValue;
 
     public ushort ControlState { get; private set; } = 5;   // SVID 14：固定 ONLINE REMOTE
     public ushort ScState { get; private set; } = 2;        // SVID 21：固定 PAUSED（MCS 现场约定）
 
-    public Inventory(string? dbPath = null, int plcCount = 1, Action<string, string, LogLevel>? log = null, int historyCap = 2000)
+    public Inventory(string? dbPath = null, int plcCount = 1, Action<string, string, LogLevel>? log = null,
+        int historyCap = 2000, Func<int, int, string>? unitNamer = null, IReadOnlyList<int>? stationCounts = null)
     {
         _dbPath = dbPath;
         _log = log ?? ((c, m, lv) => Console.WriteLine($"[{c}] {m}"));
         _historyCap = historyCap;
+        _unitNamer = unitNamer ?? ((p, s) => $"BUFFER{p:00}_{s:00}");
+        _stationCounts = stationCounts;
         if (dbPath != null) LoadFromDb();   // 先建表并加载已有行
         InitStations(plcCount);             // 建满行（缺的行同步落库，保证后续 UPDATE 有目标）
     }
 
-    /// <summary>按配置建满所有站口空行（重启/新增机台补缺，已有行不动）</summary>
+    /// <summary>按配置建满各站口空行（重启/新增机台补缺，已有行不动；每台站口数按 stationCounts 裁剪，缺省 16）</summary>
     public void InitStations(int plcCount)
     {
         lock (_lock)
         {
             for (int p = 1; p <= plcCount; p++)
-                for (int s = 1; s <= RegisterMap.StationsPerPlc; s++)
+            {
+                int cnt = _stationCounts != null && p - 1 < _stationCounts.Count
+                    ? Math.Min(RegisterMap.StationsPerPlc, _stationCounts[p - 1])
+                    : RegisterMap.StationsPerPlc;
+                for (int s = 1; s <= cnt; s++)
                 {
                     var key = Key(p, s);
                     if (_stations.ContainsKey(key)) continue;
-                    var row = new StationRow(p, s, EventEngine.Unit(p, s), 0, "", "", "", 0, 0, 0, 0, "", "", 0, "");
+                    var row = new StationRow(p, s, _unitNamer(p, s), 0, "", "", "", 0, 0, 0, 0, "", "", 0, "");
                     _stations[key] = row;
                     Exec("INSERT OR REPLACE INTO stations(station_key, plc, station, unit_id, state, carrier_id, install_source, avail, alarm_code, updated_at, cmd_state, cmd_type, cmd_carrier_id, cmd_time, cmd_seq, cmd_source) " +
                          "VALUES($k,$p,$s,$u,0,'','',0,0,'',0,0,'','',0,'')",
                          ("$k", key), ("$p", p), ("$s", s), ("$u", row.UnitId));
                 }
+            }
         }
     }
 
@@ -111,7 +121,7 @@ public sealed class Inventory : IDisposable
         lock (_lock)
         {
             if (!_stations.TryGetValue(key, out var row))
-                _stations[key] = row = new StationRow(plcIndex, station, EventEngine.Unit(plcIndex, station), 0, "", "", "", 0, 0, 0, 0, "", "", 0, "");
+                _stations[key] = row = new StationRow(plcIndex, station, _unitNamer(plcIndex, station), 0, "", "", "", 0, 0, 0, 0, "", "", 0, "");
             if (row.CarrierId.Length > 0 && row.CarrierId != carrierId) _byCarrier.Remove(row.CarrierId);
             _stations[key] = row with
             {

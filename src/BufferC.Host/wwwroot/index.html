@@ -19,7 +19,7 @@
   .grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 3px; }
   .cell { border-radius: 4px; padding: 3px 5px; font-size: 11px; min-height: 36px; color: #fff; position: relative; }
   .st0 { background: #bdbdbd; } .st1 { background: var(--ok); } .st2 { background: var(--blue); }
-  .st3 { background: var(--purple); } .st4 { background: var(--err); } .st99 { background: #37474f; }
+  .st3 { background: var(--purple); } .st4 { background: #78909c; } .st99 { background: #37474f; }
   .offline-mark { position: absolute; top: 1px; right: 3px; font-size: 9px; background: #0008; border-radius: 3px; padding: 0 3px; }
   .trunc { background: #ffeb3b; color: #000; border-radius: 3px; padding: 0 3px; font-size: 9px; }
   .stat-line { font-size: 11px; color: #555; margin: 4px 0; }
@@ -346,7 +346,7 @@
 </div>
 
 <script>
-const ST = { 0: '空', 1: '有货', 2: '正放', 3: '正取', 4: '故障', 5: '人工有货' };
+const ST = { 0: '空', 1: '有货', 2: '正放', 3: '正取', 4: '其他', 5: '人工有货' };
 let logFilter = '', logPaused = false, logLevel = '', logWord = '', pendingCmd = null, pendingDbg = null;
 let lastRenderedSeq = 0, needFullRerender = true;
 let lastStatus = null;
@@ -367,7 +367,19 @@ function clsForLog(line) {
   if (line.category === '←MCS' || line.category === '→MCS') return 'l-frame';
   return '';
 }
-function logRow(l) { return `<div><span class="t">${fmtTime(l.time)}</span> <span class="c">[${l.category}]</span> <span class="${clsForLog(l)}">${l.message.replace(/</g, '&lt;')}</span></div>`; }
+// 日志行时间（约定格式：yyyy-MM-dd HH:mm:ss.fff）与级别位（定宽 5；审计行 AUDIT）——与文件/控制台行格式一致
+function fmtLogTime(t) {
+  const d = new Date(t);
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${String(d.getMilliseconds()).padStart(3, '0')}`;
+}
+function levelTag(l) {
+  if (l.isAudit) return 'AUDIT';
+  return ({ Error: 'ERROR', Warn: 'WARN ', Info: 'INFO ', Debug: 'DEBUG', Trace: 'TRACE' })[l.level] || l.level;
+}
+function logRow(l) {
+  return `<div><span class="t">${fmtLogTime(l.time)}</span> <span class="${clsForLog(l) || 'c'}">[${levelTag(l)}]</span> <span class="c">[${l.category}]</span> <span class="t">[#${String(l.seq).padStart(6, '0')}]</span> <span class="${clsForLog(l)}">${l.message.replace(/</g, '&lt;')}</span></div>`;
+}
 function wordOk(l) { return !logWord || logWord.split('|').some(w => l.message.includes(w)); }
 
 // ---------- 页面切换 ----------
@@ -421,7 +433,7 @@ function renderOverview(s) {
     overviewKey = key;
     tbody.innerHTML = s.plcs.map(p => `
       <tr id="ov-${p.index}">
-        <td>${p.index} 号 Buffer</td>
+        <td>${p.name || p.index + ' 号 Buffer'}</td>
         <td data-k="state"></td>
         <td data-k="ip">${p.ip}</td>
         <td data-k="alarm"></td>
@@ -439,7 +451,7 @@ function renderOverview(s) {
     const occ = p.stations.filter(x => x.state === 1 || x.state === 5).length;
     row.querySelector('[data-k=state]').innerHTML = `<span class="badge ${p.connected ? 'b-ok' : 'b-off'}">${p.connected ? '在线' : '离线'}</span>`;
     row.querySelector('[data-k=alarm]').innerHTML = p.registers.alarmSummary ? `<span class="badge b-err">${p.registers.alarmSummary}</span>` : '—';
-    row.querySelector('[data-k=occ]').textContent = `${occ}/16`;
+    row.querySelector('[data-k=occ]').textContent = `${occ}/${p.stations.length}`;
     row.querySelector('[data-k=poll]').textContent = st.pollCount;
     row.querySelector('[data-k=err]').innerHTML = st.errorCount ? `<span class="fail-txt">${st.errorCount}</span>` : '0';
     row.querySelector('[data-k=rc]').textContent = st.reconnectCount;
@@ -453,7 +465,7 @@ function fillPlcSelects(plcs) {
   const sel = document.getElementById('detPlc');
   const cur = sel.value;
   sel.innerHTML = plcs.map(p =>
-    `<option value="${p.index}" ${String(p.index) === cur ? 'selected' : ''}>${p.index} 号 Buffer（${p.connected ? '在线' : '离线'}）</option>`).join('');
+    `<option value="${p.index}" ${String(p.index) === cur ? 'selected' : ''}>${p.name || p.index + ' 号 Buffer'}（${p.connected ? '在线' : '离线'}）</option>`).join('');
   if (!sel.value && plcs.length) sel.value = plcs[0].index;
 }
 
@@ -468,25 +480,26 @@ function getDetPlc(s) {
 }
 
 function buildDetail(p) {
+  const stCnt = p.stations.length;   // 该机台逻辑站口数（8/16）
   document.getElementById('detByteOrder').textContent = p.registers.byteOrder;
   document.getElementById('detGrid').innerHTML =
-    Array.from({ length: 16 }, (_, i) => `<div class="cell" id="det-cell-${i + 1}"></div>`).join('');
+    Array.from({ length: stCnt }, (_, i) => `<div class="cell" id="det-cell-${i + 1}"></div>`).join('');
 
   const tr = (addr, key, name) => `<tr><td>${addr}</td><td data-r="${key}"></td><td>${name}</td></tr>`;
   // 严格按地址 0→49 从上到下排（0 编号、1 告警汇总、2~17 站口状态、18~33 站口告警码、34~49 站口可用）
   let html = tr(0, 0, 'Buffer 编号') + tr(1, 1, '告警汇总');
-  for (let i = 0; i < 16; i++) html += tr(2 + i, 2 + i, `站口${i + 1} 状态`);
-  for (let i = 0; i < 16; i++) html += tr(18 + i, 18 + i, `站口${i + 1} 告警码`);
-  for (let i = 0; i < 16; i++) html += tr(34 + i, 34 + i, `站口${i + 1} 可用(0=在线 1=下线)`);
+  for (let i = 0; i < stCnt; i++) html += tr(2 + i, 2 + i, `站口${i + 1} 状态`);
+  for (let i = 0; i < stCnt; i++) html += tr(18 + i, 18 + i, `站口${i + 1} 告警码`);
+  for (let i = 0; i < stCnt; i++) html += tr(34 + i, 34 + i, `站口${i + 1} 可用(0=在线 1=下线)`);
   document.getElementById('tbl-reg-status').innerHTML = '<tr><th>地址</th><th>值</th><th>含义</th></tr>' + html;
 
   html = tr(306, 306, '命令编号回显');
-  for (let i = 0; i < 16; i++) html += tr(307 + i, 307 + i, `站口${i + 1} 命令回显`);
+  for (let i = 0; i < stCnt; i++) html += tr(307 + i, 307 + i, `站口${i + 1} 命令回显`);
   html += tr(323, 323, '扫码站口号') + `<tr><td>324~339</td><td id="det-scan"></td><td>货物扫码号</td></tr>` + tr(340, 340, '握手(1=PLC请求)');
   document.getElementById('tbl-reg-echo').innerHTML = '<tr><th>地址</th><th>值</th><th>含义</th></tr>' + html;
 
   html = '<tr><th>站口</th><th>地址</th><th>载具ID（快照）</th><th>HEX（原始值）</th></tr>';
-  for (let st = 1; st <= 16; st++)
+  for (let st = 1; st <= stCnt; st++)
     html += `<tr><td>站口${st}</td><td class="mono">${50 + (st - 1) * 16}~${65 + (st - 1) * 16}</td><td data-sid="${st}"></td><td class="mono" data-hid="${st}">—</td></tr>`;
   document.getElementById('tbl-reg-id').innerHTML = html;
 
@@ -518,9 +531,9 @@ function renderDetail(s) {
   const r = p.registers;
   const v = {};
   v[0] = r.bufferNo; v[1] = r.alarmSummary;
-  for (let i = 0; i < 16; i++) { v[2 + i] = p.stations[i].state; v[18 + i] = p.stations[i].alarm; v[34 + i] = p.stations[i].avail; }
+  for (let i = 0; i < p.stations.length; i++) { v[2 + i] = p.stations[i].state; v[18 + i] = p.stations[i].alarm; v[34 + i] = p.stations[i].avail; }
   v[306] = r.echoNo;
-  for (let i = 0; i < 16; i++) v[307 + i] = r.echoStation[i];
+  for (let i = 0; i < p.stations.length; i++) v[307 + i] = r.echoStation[i];
   v[323] = r.scanStation; v[340] = r.handshake;
   for (const td of document.querySelectorAll('#page-plcdetail [data-r]'))
     if (td.dataset.r in v) td.textContent = v[td.dataset.r];   // 仅快照键（c* 命令区按需读取的值不覆盖）
@@ -582,7 +595,8 @@ async function readIdRaw() {
     let vals = await regRead(detPlc, 50, 256);
     if (!vals) vals = await readRegBlocks(detPlc, 50, 256);
     const bo = document.getElementById('detByteOrder').textContent;
-    for (let st = 1; st <= 16; st++) {
+    const stCnt = document.querySelectorAll('#tbl-reg-id [data-hid]').length;
+    for (let st = 1; st <= stCnt; st++) {
       const words = vals.slice((st - 1) * 16, st * 16);
       const td = document.querySelector(`#tbl-reg-id [data-hid="${st}"]`);
       if (td) td.innerHTML = `<div>${unpackAscii(words, bo) || '—'}</div><div class="mono">${words.map(hex4).join(' ')}</div>`;
@@ -925,7 +939,7 @@ async function renderPlctEcho() {
   const st = plctStValid();
   let h = '<tr><th>地址</th><th>值</th><th>含义</th></tr>' +
     `<tr><td>306</td><td>${r.echoNo}</td><td>命令编号回显</td></tr>`;
-  for (let i = 0; i < 16; i++) {
+  for (let i = 0; i < p.stations.length; i++) {
     const isTarget = !isNaN(st) && i + 1 === st;
     const isOk = plctLastOk && plc === plctLastOk.plc && i + 1 === plctLastOk.station && r.echoStation[i] === plctLastOk.cmd;
     const style = isOk ? ' style="background:#c8e6c9;font-weight:bold"' : isTarget ? ' style="background:#fff9c4"' : '';
@@ -1074,16 +1088,17 @@ function mcsBuild() {
   // 快速区 0~49（原始寄存器表：地址 | 值 | 说明，纯手改）
   let h = '<tr><th>地址</th><th>值</th><th>说明</th></tr>';
   const rows = [[0, 'Buffer 编号'], [1, '告警汇总']];
-  for (let i = 0; i < 16; i++) rows.push([2 + i, `站口${i + 1} 状态（0空/1有货/2正放/3正取/4故障/5人工有货）`]);
-  for (let i = 0; i < 16; i++) rows.push([18 + i, `站口${i + 1} 告警码（0=无告警）`]);
-  for (let i = 0; i < 16; i++) rows.push([34 + i, `站口${i + 1} 可用（0=在服/1=停服）`]);
+  const mcsStCnt = lastStatus ? (lastStatus.plcs.find(x => x.index === mcsPlcNum())?.stations.length ?? 16) : 16;
+  for (let i = 0; i < mcsStCnt; i++) rows.push([2 + i, `站口${i + 1} 状态（0空/1有货/2正放/3正取/4故障/5人工有货）`]);
+  for (let i = 0; i < mcsStCnt; i++) rows.push([18 + i, `站口${i + 1} 告警码（0=无告警）`]);
+  for (let i = 0; i < mcsStCnt; i++) rows.push([34 + i, `站口${i + 1} 可用（0=在服/1=停服）`]);
   h += rows.map(([a, d]) =>
     `<tr><td class="mono">${a}</td><td><input data-m="${a}" size="6" onkeydown="if(event.key==='Enter')this.blur()" onchange="mcsWriteCell(this)"></td><td>${d}</td></tr>`).join('');
   document.getElementById('tbl-mcs-fast').innerHTML = h;
 
   // ID 区 50~305：文本输入（agtPackAscii 16 字写回）
   h = '<tr><th>站口</th><th>地址</th><th>货物 ID（≤32 字符，回车写回）</th></tr>';
-  for (let st = 1; st <= 16; st++)
+  for (let st = 1; st <= mcsStCnt; st++)
     h += `<tr><td>站口${st}</td><td class="mono">${50 + (st - 1) * 16}~${65 + (st - 1) * 16}</td>` +
       `<td><input data-mid="${st}" size="36" onkeydown="if(event.key==='Enter')this.blur()" onchange="mcsWriteId(this)"></td></tr>`;
   document.getElementById('tbl-mcs-id').innerHTML = h;
@@ -1098,7 +1113,7 @@ function mcsBuild() {
   // 只读：回显 + 当前 400
   h = '<tr><th>地址</th><th>值</th><th>说明</th></tr>' +
     `<tr><td class="mono">306</td><td data-r="306"></td><td>命令编号回显</td></tr>`;
-  for (let i = 0; i < 16; i++)
+  for (let i = 0; i < mcsStCnt; i++)
     h += `<tr><td class="mono">${307 + i}</td><td data-r="${307 + i}"></td><td>站口${i + 1} 命令回显</td></tr>`;
   h += `<tr><td class="mono">400</td><td id="mcsCur400">—</td><td>命令编号（306 回显值；命令区写区禁读）</td></tr>`;
   document.getElementById('tbl-mcs-echo').innerHTML = h;
@@ -1113,9 +1128,9 @@ async function mcsRefresh(s) {
     // 快速区值 = 轮询快照（状态/告警/可用/回显/握手全在快照里，1.5s 一次）；编辑中的格子不覆盖
     const v = {};
     v[0] = p.registers.bufferNo; v[1] = p.registers.alarmSummary;
-    for (let i = 0; i < 16; i++) { v[2 + i] = p.stations[i].state; v[18 + i] = p.stations[i].alarm; v[34 + i] = p.stations[i].avail; }
+    for (let i = 0; i < p.stations.length; i++) { v[2 + i] = p.stations[i].state; v[18 + i] = p.stations[i].alarm; v[34 + i] = p.stations[i].avail; }
     v[306] = p.registers.echoNo;
-    for (let i = 0; i < 16; i++) v[307 + i] = p.registers.echoStation[i];
+    for (let i = 0; i < p.stations.length; i++) v[307 + i] = p.registers.echoStation[i];
     v[323] = p.registers.scanStation; v[340] = p.registers.handshake;
     for (const el of document.querySelectorAll('#tbl-mcs-fast [data-m], #tbl-mcs-scan [data-m]')) {
       if (document.activeElement === el) continue;
@@ -1135,7 +1150,7 @@ async function mcsRefresh(s) {
     try {
       let vals = await regRead(plc, 50, 256);
       if (!vals) vals = await readRegBlocks(plc, 50, 256);
-      for (let st = 1; st <= 16; st++) {
+      for (let st = 1; st <= (p ? p.stations.length : 16); st++) {
         const el = document.querySelector(`#tbl-mcs-id [data-mid="${st}"]`);
         if (!el || document.activeElement === el) continue;
         const cur = unpackAscii(vals.slice((st - 1) * 16, st * 16), mcsBo());

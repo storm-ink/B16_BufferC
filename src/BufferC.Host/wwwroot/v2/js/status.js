@@ -51,7 +51,7 @@ function renderOverview(s) {
     overviewKey = key;
     tbody.innerHTML = s.plcs.map(p => `
       <tr id="ov-${p.index}">
-        <td>${p.index} 号 Buffer</td>
+        <td>${p.name || p.index + ' 号 Buffer'}</td>
         <td data-k="state"></td>
         <td data-k="ip">${p.ip}</td>
         <td data-k="alarm"></td>
@@ -69,7 +69,7 @@ function renderOverview(s) {
     const occ = p.stations.filter(x => x.state === 1 || x.state === 5).length;
     row.querySelector('[data-k=state]').innerHTML = `<span class="badge ${p.connected ? 'b-ok' : 'b-off'}">${p.connected ? '在线' : '离线'}</span>`;
     row.querySelector('[data-k=alarm]').innerHTML = p.registers.alarmSummary ? `<span class="badge b-err">${p.registers.alarmSummary}</span>` : '—';
-    row.querySelector('[data-k=occ]').textContent = `${occ}/16`;
+    row.querySelector('[data-k=occ]').textContent = `${occ}/${p.stations.length}`;
     row.querySelector('[data-k=poll]').textContent = st.pollCount;
     row.querySelector('[data-k=err]').innerHTML = st.errorCount ? `<span class="fail-txt">${st.errorCount}</span>` : '0';
     row.querySelector('[data-k=rc]').textContent = st.reconnectCount;
@@ -78,7 +78,7 @@ function renderOverview(s) {
 }
 
 // 站口状态图标（与 ST 状态名配对；色阶 + 图标 + 文字三者并用）
-const STATE_ICON = { 0: '◌', 1: '●', 2: '↓', 3: '↑', 4: '⚠', 5: '✋' };
+const STATE_ICON = { 0: '◌', 1: '●', 2: '↓', 3: '↑', 4: '·', 5: '✋' };
 
 // ---------- PLC 详情：单台 16 站口 + 完整寄存器视图（原地更新防缩回） ----------
 function fillPlcSelects(plcs) {
@@ -86,7 +86,7 @@ function fillPlcSelects(plcs) {
   const sel = document.getElementById('detPlc');
   const cur = sel.value;
   sel.innerHTML = plcs.map(p =>
-    `<option value="${p.index}" ${String(p.index) === cur ? 'selected' : ''}>${p.index} 号 Buffer（${p.connected ? '在线' : '离线'}）</option>`).join('');
+    `<option value="${p.index}" ${String(p.index) === cur ? 'selected' : ''}>${p.name || p.index + ' 号 Buffer'}（${p.connected ? '在线' : '离线'}）</option>`).join('');
   if (!sel.value && plcs.length) sel.value = plcs[0].index;
 }
 
@@ -101,27 +101,28 @@ function getDetPlc(s) {
 }
 
 function buildDetail(p) {
+  const stCnt = p.stations.length;   // 该机台逻辑站口数（8/16）
   document.getElementById('detByteOrder').textContent = p.registers.byteOrder;
   document.getElementById('detGrid').innerHTML =
-    Array.from({ length: 16 }, (_, i) => `<div class="cell" id="det-cell-${i + 1}"></div>`).join('');
+    Array.from({ length: stCnt }, (_, i) => `<div class="cell" id="det-cell-${i + 1}"></div>`).join('');
 
   // 状态区：严格按地址 0→49 从上到下排（0 编号、1 告警汇总、2~17 站口状态、18~33 站口告警码、34~49 站口可用）
   const addrRow = (addr, key, name) => ({ cells: [{ t: 'text', v: addr }, { t: 'r', k: key }, { t: 'text', v: name }] });
   const statusRows = [addrRow(0, 0, 'Buffer 编号'), addrRow(1, 1, '告警汇总')];
-  for (let i = 0; i < 16; i++) statusRows.push(addrRow(2 + i, 2 + i, `站口${i + 1} 状态`));
-  for (let i = 0; i < 16; i++) statusRows.push(addrRow(18 + i, 18 + i, `站口${i + 1} 告警码`));
-  for (let i = 0; i < 16; i++) statusRows.push(addrRow(34 + i, 34 + i, `站口${i + 1} 可用(0=在线 1=下线)`));
+  for (let i = 0; i < stCnt; i++) statusRows.push(addrRow(2 + i, 2 + i, `站口${i + 1} 状态`));
+  for (let i = 0; i < stCnt; i++) statusRows.push(addrRow(18 + i, 18 + i, `站口${i + 1} 告警码`));
+  for (let i = 0; i < stCnt; i++) statusRows.push(addrRow(34 + i, 34 + i, `站口${i + 1} 可用(0=在线 1=下线)`));
   buildRegTable(document.getElementById('tbl-reg-status'), { cols: ['地址', '值', '含义'], rows: statusRows });
 
   const echoRows = [addrRow(306, 306, '命令编号回显')];
-  for (let i = 0; i < 16; i++) echoRows.push(addrRow(307 + i, 307 + i, `站口${i + 1} 命令回显`));
+  for (let i = 0; i < stCnt; i++) echoRows.push(addrRow(307 + i, 307 + i, `站口${i + 1} 命令回显`));
   echoRows.push(addrRow(323, 323, '扫码站口号'));
   echoRows.push({ cells: [{ t: 'text', v: '324~339' }, { t: 'id', k: 'det-scan' }, { t: 'text', v: '货物扫码号' }] });
   echoRows.push(addrRow(340, 340, '握手(1=PLC请求)'));
   buildRegTable(document.getElementById('tbl-reg-echo'), { cols: ['地址', '值', '含义'], rows: echoRows });
 
   const idRows = [];
-  for (let st = 1; st <= 16; st++)
+  for (let st = 1; st <= stCnt; st++)
     idRows.push({ cells: [{ t: 'text', v: `站口${st}` }, { t: 'raw', attrs: 'class="mono"', v: `${50 + (st - 1) * 16}~${65 + (st - 1) * 16}` }, { t: 'sid', k: st }, { t: 'hid', k: st }] });
   buildRegTable(document.getElementById('tbl-reg-id'), { cols: ['站口', '地址', '载具ID（快照）', 'HEX（原始值）'], rows: idRows });
 
@@ -155,11 +156,12 @@ function renderDetail(s) {
 // 寄存器值表原地更新（[data-r]/[data-sid] 按地址填值；表在 PLC 单机测试页，设备详情页与单机测试页共用）
 function fillRegTables(p) {
   const r = p.registers;
+  const stCnt = p.stations.length;   // 该机台逻辑站口数（8/16）
   const v = {};
   v[0] = r.bufferNo; v[1] = r.alarmSummary;
-  for (let i = 0; i < 16; i++) { v[2 + i] = p.stations[i].state; v[18 + i] = p.stations[i].alarm; v[34 + i] = p.stations[i].avail; }
+  for (let i = 0; i < stCnt; i++) { v[2 + i] = p.stations[i].state; v[18 + i] = p.stations[i].alarm; v[34 + i] = p.stations[i].avail; }
   v[306] = r.echoNo;
-  for (let i = 0; i < 16; i++) v[307 + i] = r.echoStation[i];
+  for (let i = 0; i < stCnt; i++) v[307 + i] = r.echoStation[i];
   v[323] = r.scanStation; v[340] = r.handshake;
   for (const td of document.querySelectorAll('#page-plctest [data-r], #page-plcdetail [data-r]'))
     if (td.dataset.r in v) td.textContent = v[td.dataset.r];   // 仅快照键（c* 命令区按需读取的值不覆盖）
@@ -216,7 +218,8 @@ async function readIdRaw() {
     let vals = await regRead(plc, 50, 256);
     if (!vals) vals = await readRegBlocks(plc, 50, 256);
     const bo = document.getElementById('detByteOrder').textContent;
-    for (let st = 1; st <= 16; st++) {
+    const stCnt = document.querySelectorAll('#tbl-reg-id [data-hid]').length;   // 该机台逻辑站口数
+    for (let st = 1; st <= stCnt; st++) {
       const words = vals.slice((st - 1) * 16, st * 16);
       const td = document.querySelector(`#tbl-reg-id [data-hid="${st}"]`);
       if (td) td.innerHTML = `<div>${unpackAscii(words, bo) || '—'}</div><div class="mono">${words.map(hex4).join(' ')}</div>`;

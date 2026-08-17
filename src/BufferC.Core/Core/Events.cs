@@ -11,11 +11,8 @@ public enum EventKind
     CarrierRemoveCompleted = 202,  // 手动取走
     UnitInService = 301,
     UnitOutOfService = 302,
-    AlarmSet = 102,
-    AlarmCleared = 101,
-    UnitAlarmSet = 402,
-    UnitAlarmCleared = 401,
-    CarrierIdRead = 501,
+    AlarmSet = 102,        // 置起组：S5F1+102+402（三帧连发）
+    AlarmCleared = 101,    // 清除组：S5F1+101+401（三帧连发）
 }
 
 /// <summary>一个待上报事件</summary>
@@ -25,6 +22,7 @@ public sealed record PlcEvent(EventKind Kind, Dictionary<string, string> Params)
 public sealed class PlcSnapshot
 {
     public int PlcIndex;
+    public int StationCount = 16;                    // 逻辑站口数（现场 8/16；寄存器布局恒 16 站空间，裁剪只看逻辑层）
     public ushort BufferNo;                          // 0
     public ushort AlarmSummary;                      // 1
     public ushort[] StationState = new ushort[16];   // 2~17
@@ -40,6 +38,7 @@ public sealed class PlcSnapshot
     public PlcSnapshot Clone() => new()
     {
         PlcIndex = PlcIndex,
+        StationCount = StationCount,
         BufferNo = BufferNo,
         AlarmSummary = AlarmSummary,
         StationState = (ushort[])StationState.Clone(),
@@ -60,17 +59,18 @@ public sealed class PlcSnapshot
 /// </summary>
 public sealed class EventEngine
 {
+    private readonly Func<int, string?>? _deviceName;   // plcIndex → 机台名（null/缺省回退 BUFFER{index:00}，旧测试兼容）
     private readonly object _lock = new();           // 15 个 poller 线程并发调用 Diff/Reset/MarkScanInstalled：统一串行化（推导极轻，锁开销可忽略）
     private readonly Dictionary<int, PlcSnapshot> _base = new();
     // 扫码路径完成写入后抑制 204（手动放入已由 501+201 上报）；取出时清除
     private readonly HashSet<string> _suppress204 = new();
-    // 已上报的 SC 级告警（"plc:alid"）：同告警多单位时 102/101 只报一次，402/401 逐单位（spec 2.2.2/2.2.3）
-    private readonly HashSet<string> _scAlarms = new();
 
     public void MarkScanInstalled(int plcIndex, int station)
     {
         lock (_lock) _suppress204.Add($"{plcIndex}:{station}");
     }
+
+    public EventEngine(Func<int, string?>? deviceName = null) { _deviceName = deviceName; }
 
     /// <summary>AGV 放入完成（状态 2→1）回调：BufferC 用于启动「等扫码窗口 → 无 ID 则找 AGVC 要货物 ID」（方向1）</summary>
     public Action<int, int>? OnAgvPutCompleted;
@@ -99,8 +99,8 @@ public sealed class EventEngine
             return events;   // 基线
         }
 
-        // 站口状态 2~17
-        for (int i = 0; i < 16; i++)
+        // 站口状态 2~17（只推导本机台逻辑站口数——8 站 PLC 的 9~16 寄存器忽略，防幻影事件）
+        for (int i = 0; i < Math.Min(16, cur.StationCount); i++)
         {
             ushort a = prev.StationState[i], b = cur.StationState[i];
             if (a == b) continue;
@@ -128,40 +128,33 @@ public sealed class EventEngine
                     events.Add(new PlcEvent(EventKind.CarrierInstallCompleted, P(
                         "CarrierID", cur.CarrierId[i], "CarrierLoc", Loc(cur.PlcIndex, i + 1), "Station", (i + 1).ToString())));
             }
-            else if (b == 0 && a != 0) // 取出（AGV 路径 1/5→3→0，终点 3→0；手动 1/5→0 直跳）
+            else if (b == 0 && a != 0) // 取出：人工（5→0 直跳）→ 202 CarrierRemoveCompleted；AGV（1/3→0）→ 203 CarrierRemoved
             {
                 _suppress204.Remove(key);
-                events.Add(new PlcEvent(EventKind.CarrierRemoved, P(
-                    "CarrierID", cur.CarrierId[i], "HandoffType", a == RegisterMap.StTaking ? "AGV" : "MANUAL", "Station", (i + 1).ToString())));
+                var kind = a == RegisterMap.StManualCarrier ? EventKind.CarrierRemoveCompleted : EventKind.CarrierRemoved;
+                events.Add(new PlcEvent(kind, P(
+                    "CarrierID", cur.CarrierId[i], "CarrierLoc", Loc(cur.PlcIndex, i + 1), "Station", (i + 1).ToString())));
             }
         }
 
-        // 告警码 18~33（SC 级 102/101 按告警码去重，单位级 402/401 逐站上报）
-        for (int i = 0; i < 16; i++)
+        // 告警码 18~33：每个单位告警独立走 2.2.1 完整流程，不去重（现场约定 2026-08-17）。
+        // 一个事件 = 一组三帧（置起 S5F1+102+402 / 清除 S5F1+101+401），由 BufferCService 在组锁内连发。
+        for (int i = 0; i < Math.Min(16, cur.StationCount); i++)
         {
             ushort a = prev.StationAlarm[i], b = cur.StationAlarm[i];
             if (a == b) continue;
             if (a == 0 && b != 0)
             {
-                bool first = _scAlarms.Add($"{cur.PlcIndex}:{b}");
-                if (first)
-                    events.Add(new PlcEvent(EventKind.AlarmSet, P("AlarmId", b.ToString(), "UnitId", Unit(cur.PlcIndex, i + 1), "AlarmText", $"Station{i + 1} Alarm {b}")));
-                events.Add(new PlcEvent(EventKind.UnitAlarmSet, P("AlarmId", b.ToString(), "UnitId", Unit(cur.PlcIndex, i + 1), "AlarmText", $"Station{i + 1} Alarm {b}")));
+                events.Add(new PlcEvent(EventKind.AlarmSet, P("AlarmId", b.ToString(), "UnitId", Unit(cur.PlcIndex, i + 1), "AlarmText", $"Station{i + 1} Alarm {b}")));
             }
             else if (a != 0 && b == 0)
             {
-                events.Add(new PlcEvent(EventKind.UnitAlarmCleared, P("AlarmId", a.ToString(), "UnitId", Unit(cur.PlcIndex, i + 1), "AlarmText", $"Station{i + 1} Alarm {a}")));
-                bool anyLeft = cur.StationAlarm.Any(x => x == a);
-                if (!anyLeft)
-                {
-                    _scAlarms.Remove($"{cur.PlcIndex}:{a}");
-                    events.Add(new PlcEvent(EventKind.AlarmCleared, P("AlarmId", a.ToString(), "UnitId", Unit(cur.PlcIndex, i + 1), "AlarmText", $"Station{i + 1} Alarm {a}")));
-                }
+                events.Add(new PlcEvent(EventKind.AlarmCleared, P("AlarmId", a.ToString(), "UnitId", Unit(cur.PlcIndex, i + 1), "AlarmText", $"Station{i + 1} Alarm {a}")));
             }
         }
 
         // 可用状态 34~49
-        for (int i = 0; i < 16; i++)
+        for (int i = 0; i < Math.Min(16, cur.StationCount); i++)
         {
             ushort a = prev.StationAvail[i], b = cur.StationAvail[i];
             if (a == b) continue;
@@ -180,7 +173,12 @@ public sealed class EventEngine
         return d;
     }
 
-    // MCS 现场命名规则（2026-08-15）：单位/位置统一 = BUFFER{机台号2位}_{站口2位}（Buffer1_Port2 → BUFFER01_02）
-    public static string Loc(int plcIndex, int station) => $"BUFFER{plcIndex:00}_{station:00}";
-    public static string Unit(int plcIndex, int station) => $"BUFFER{plcIndex:00}_{station:00}";
+    // 现场命名（2026-08-17）：单位/位置 = {机台名}_P{站口2位}（如 MAGV03B01_P01）；
+    // 机台名缺失/未注入时回退旧格式 BUFFER{机台号2位}_{站口2位}——与旧格式逐字符一致（现有测试/单机联调兼容）
+    public string Loc(int plcIndex, int station)
+    {
+        string? name = _deviceName?.Invoke(plcIndex);
+        return string.IsNullOrEmpty(name) ? $"BUFFER{plcIndex:00}_{station:00}" : $"{name}_P{station:00}";
+    }
+    public string Unit(int plcIndex, int station) => Loc(plcIndex, station);
 }

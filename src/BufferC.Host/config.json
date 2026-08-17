@@ -1,9 +1,119 @@
 {
   "plcs": [
-        { "index": 1, "ip": "127.0.0.1", "port": 5501, "unitId": 1, "byteOrder": "high", "timeoutMs": 3000, "lastSeq": 0 }
+    {
+      "index": 1,
+      "ip": "127.0.0.1",
+      "port": 5501,
+      "unitId": 1,
+      "byteOrder": "low",
+      "timeoutMs": 3000,
+      "lastSeq": 0,
+      "name": "MAGV03B001",
+      "stations": 8
+    },
+    {
+      "index": 2,
+      "ip": "127.0.0.1",
+      "port": 5502,
+      "unitId": 1,
+      "byteOrder": "low",
+      "timeoutMs": 3000,
+      "lastSeq": 0,
+      "name": "MAGV03B002",
+      "stations": 8
+    },
+    {
+      "index": 3,
+      "ip": "127.0.0.1",
+      "port": 5503,
+      "unitId": 1,
+      "byteOrder": "low",
+      "timeoutMs": 3000,
+      "lastSeq": 0,
+      "name": "MAGV03B003",
+      "stations": 16
+    },
+    {
+      "index": 4,
+      "ip": "127.0.0.1",
+      "port": 5504,
+      "unitId": 1,
+      "byteOrder": "low",
+      "timeoutMs": 3000,
+      "lastSeq": 0,
+      "name": "MAGV03B004",
+      "stations": 8
+    },
+    {
+      "index": 5,
+      "ip": "127.0.0.1",
+      "port": 5505,
+      "unitId": 1,
+      "byteOrder": "low",
+      "timeoutMs": 3000,
+      "lastSeq": 0,
+      "name": "MAGV03B005",
+      "stations": 8
+    },
+    {
+      "index": 6,
+      "ip": "127.0.0.1",
+      "port": 5506,
+      "unitId": 1,
+      "byteOrder": "low",
+      "timeoutMs": 3000,
+      "lastSeq": 0,
+      "name": "MAGV03B006",
+      "stations": 8
+    },
+    {
+      "index": 7,
+      "ip": "127.0.0.1",
+      "port": 5507,
+      "unitId": 1,
+      "byteOrder": "low",
+      "timeoutMs": 3000,
+      "lastSeq": 0,
+      "name": "MAGV03B007",
+      "stations": 8
+    },
+    {
+      "index": 8,
+      "ip": "127.0.0.1",
+      "port": 5508,
+      "unitId": 1,
+      "byteOrder": "low",
+      "timeoutMs": 3000,
+      "lastSeq": 0,
+      "name": "MAGV03B008",
+      "stations": 8
+    },
+    {
+      "index": 9,
+      "ip": "127.0.0.1",
+      "port": 5509,
+      "unitId": 1,
+      "byteOrder": "low",
+      "timeoutMs": 3000,
+      "lastSeq": 0,
+      "name": "MAGV03B009",
+      "stations": 8
+    }
   ],
-  "hsms": { "listenPort": 5000, "mdln": "BUFFERC", "softRev": "0.1.0", "t3Ms": 45000 },
-  "agvc": { "baseUrl": "http://127.0.0.1:5502", "timeoutSec": 5, "retryCount": 3, "retryIntervalMs": 2000, "cmsIndexBase": 10000, "arrivalGraceMs": 3000 },
+  "hsms": {
+    "listenPort": 5000,
+    "mdln": "BUFFERC",
+    "softRev": "0.1.0",
+    "t3Ms": 45000
+  },
+  "agvc": {
+    "baseUrl": "http://192.168.100.23:8282",
+    "timeoutSec": 5,
+    "retryCount": 3,
+    "retryIntervalMs": 2000,
+    "cmsIndexBase": 10000,
+    "arrivalGraceMs": 3000
+  },
   "pollIntervalMs": 500,
   "echoTimeoutMs": 5000,
   "echoRetryCount": 1,
