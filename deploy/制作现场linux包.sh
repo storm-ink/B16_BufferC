@@ -18,7 +18,7 @@ import json
 # 现场布局（2026-08-17）：9 台 MAGV03B01~09；B03=16 站，其余 8 站；IP 占位 192.168.1.10~18
 plcs = [{"index": i + 1, "ip": f"192.168.1.{10 + i}", "port": 502, "unitId": 1,
          "byteOrder": "low", "timeoutMs": 3000, "lastSeq": 0,
-         "name": f"MAGV03B0{i + 1:02d}", "stations": 16 if i == 2 else 8} for i in range(9)]
+         "name": f"MAGV03B{i + 1:02d}", "stations": 16 if i == 2 else 8} for i in range(9)]
 cfg = {
     "plcs": plcs,
     "hsms": {"listenPort": 5000, "mdln": "BUFFERC", "softRev": "0.1.0", "t3Ms": 45000},

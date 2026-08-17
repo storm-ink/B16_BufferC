@@ -8,7 +8,7 @@
       "byteOrder": "low",
       "timeoutMs": 3000,
       "lastSeq": 0,
-      "name": "MAGV03B001",
+      "name": "MAGV03B01",
       "stations": 8
     },
     {
@@ -19,7 +19,7 @@
       "byteOrder": "low",
       "timeoutMs": 3000,
       "lastSeq": 0,
-      "name": "MAGV03B002",
+      "name": "MAGV03B02",
       "stations": 8
     },
     {
@@ -30,7 +30,7 @@
       "byteOrder": "low",
       "timeoutMs": 3000,
       "lastSeq": 0,
-      "name": "MAGV03B003",
+      "name": "MAGV03B03",
       "stations": 16
     },
     {
@@ -41,7 +41,7 @@
       "byteOrder": "low",
       "timeoutMs": 3000,
       "lastSeq": 0,
-      "name": "MAGV03B004",
+      "name": "MAGV03B04",
       "stations": 8
     },
     {
@@ -52,7 +52,7 @@
       "byteOrder": "low",
       "timeoutMs": 3000,
       "lastSeq": 0,
-      "name": "MAGV03B005",
+      "name": "MAGV03B05",
       "stations": 8
     },
     {
@@ -63,7 +63,7 @@
       "byteOrder": "low",
       "timeoutMs": 3000,
       "lastSeq": 0,
-      "name": "MAGV03B006",
+      "name": "MAGV03B06",
       "stations": 8
     },
     {
@@ -74,7 +74,7 @@
       "byteOrder": "low",
       "timeoutMs": 3000,
       "lastSeq": 0,
-      "name": "MAGV03B007",
+      "name": "MAGV03B07",
       "stations": 8
     },
     {
@@ -85,7 +85,7 @@
       "byteOrder": "low",
       "timeoutMs": 3000,
       "lastSeq": 0,
-      "name": "MAGV03B008",
+      "name": "MAGV03B08",
       "stations": 8
     },
     {
@@ -96,7 +96,7 @@
       "byteOrder": "low",
       "timeoutMs": 3000,
       "lastSeq": 0,
-      "name": "MAGV03B009",
+      "name": "MAGV03B09",
       "stations": 8
     }
   ],
