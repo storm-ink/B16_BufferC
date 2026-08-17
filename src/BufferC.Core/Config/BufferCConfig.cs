@@ -12,6 +12,10 @@ public sealed class BufferCConfig
     public double PollIntervalMs { get; set; } = 500;      // 快速轮询周期
     public int EchoTimeoutMs { get; set; } = 5000;         // 命令回显超时
     public int EchoRetryCount { get; set; } = 1;           // 超时重试次数
+    public int EchoPollIntervalMs { get; set; } = 100;     // 回显等待轮询粒度（D6 配置化）
+    public int ReconnectMaxBackoffMs { get; set; } = 30_000;   // 断线重连退避封顶（D6 配置化）
+    public int HistoryRetentionRows { get; set; } = 2000;  // 历史表每表保留行数（D6 配置化）
+    public int DebugReadChunkWords { get; set; } = 16;     // Web 调试读（/api/debug/regread）每帧字数：现场 PLC 对长帧读慢/异常，默认 16 字循环短读（轮询器同款已验证）
     public string LogFile { get; set; } = "bufferc.log";
     public int LogRetentionDays { get; set; } = 7;           // 滚动日志保留天数（按天滚动，启动与日期翻转时清理过期文件）
     public string? AuditFile { get; set; } = "bufferc.audit.log";   // 审计日志基名（SECS 收发摘要/命令生命周期）；null/空=审计通道关闭
@@ -48,6 +52,14 @@ public sealed class BufferCConfig
             errors.Add($"logLevel 非法: {cfg.LogLevel}（允许 error/warn/info/debug/trace）");
         if (cfg.LogRetentionDays is < 1 or > 365)
             errors.Add($"logRetentionDays 非法: {cfg.LogRetentionDays}（允许 1~365）");
+        if (cfg.EchoPollIntervalMs is < 10 or > 1000)
+            errors.Add($"echoPollIntervalMs 非法: {cfg.EchoPollIntervalMs}（允许 10~1000）");
+        if (cfg.ReconnectMaxBackoffMs is < 1000 or > 300_000)
+            errors.Add($"reconnectMaxBackoffMs 非法: {cfg.ReconnectMaxBackoffMs}（允许 1000~300000）");
+        if (cfg.HistoryRetentionRows is < 100 or > 100_000)
+            errors.Add($"historyRetentionRows 非法: {cfg.HistoryRetentionRows}（允许 100~100000）");
+        if (cfg.DebugReadChunkWords is < 1 or > 125)
+            errors.Add($"debugReadChunkWords 非法: {cfg.DebugReadChunkWords}（允许 1~125，Modbus 单帧上限）");
         if (cfg.Agvc.CmsIndexBase <= RegisterMap.StationsPerPlc)
             errors.Add($"agvc.cmsIndexBase {cfg.Agvc.CmsIndexBase} 非法（必须大于站口数 {RegisterMap.StationsPerPlc}，否则站口位溢出到机台位）");
         if (cfg.Agvc.CmsIndexBase > 1_000_000)

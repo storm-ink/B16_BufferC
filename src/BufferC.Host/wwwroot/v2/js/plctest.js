@@ -15,23 +15,15 @@ function plctNeedPlc() {
   return plc;
 }
 function plctStValid() { const st = plctSt(); return !isNaN(st) && st >= 1 && st <= 16 ? st : NaN; }
-function plctEnter(ev, which) {
-  if (ev.key !== 'Enter') return;
-  ev.preventDefault();
-  if (which === 'cmd') plctWriteCmd(); else if (which === 'id') plctWriteId(); else plctTrigger();
-}
 function plctSetCmd(v) { document.getElementById('plctCmdCode').value = v; }
 
 // 下发记录条目：主行（时间+结果）+ 明细行（转译/原始数据/回读/诊断）
 function plctAdd(cls, main, detail) {
-  const box = document.getElementById('plctLog');
   const t = new Date().toLocaleTimeString('zh-CN', { hour12: false });
   const color = cls === 'ok' ? 'ok-txt' : cls === 'fail' ? 'fail-txt' : 'stat-line';
-  box.insertAdjacentHTML('beforeend',
+  appendCapped(document.getElementById('plctLog'),
     `<div style="padding:2px 0"><div><span class="t">${t}</span> <span class="${color}">${main}</span></div>` +
-    (detail ? `<div class="stat-line" style="padding-left:14px">${detail}</div>` : '') + '</div>');
-  box.scrollTop = box.scrollHeight;
-  while (box.children.length > 200) box.removeChild(box.firstChild);
+    (detail ? `<div class="stat-line" style="padding-left:14px">${detail}</div>` : '') + '</div>', 200);
 }
 // HTML 转义统一走 util.js 的 esc()（Phase 4：plctEsc 已废弃）
 
@@ -175,21 +167,22 @@ async function renderPlctEcho() {
   const p = lastStatus ? (lastStatus.plcs || []).find(x => x.index === plc) : null;
   if (!p) { el.innerHTML = '<tr><td>PLC 未配置或未在线</td></tr>'; return; }
   const r = p.registers;
+  // 寄存器视图已迁至本页：首次确保建表（设备详情页可能从未打开）+ 每轮填值
+  if (!detBuilt) buildDetail(p);
+  document.getElementById('detByteOrder').textContent = r.byteOrder;
+  fillRegTables(p);
   document.getElementById('plctBo').textContent = r.byteOrder === 'low' ? '低字节在前' : '高字节在前';
   const st = plctStValid();
-  let h = '<tr><th>地址</th><th>值</th><th>含义</th></tr>' +
-    `<tr><td>306</td><td>${r.echoNo}</td><td>命令编号回显</td></tr>`;
+  const rows = [{ cells: [{ t: 'text', v: 306 }, { t: 'text', v: r.echoNo }, { t: 'text', v: '命令编号回显' }] }];
   for (let i = 0; i < 16; i++) {
     const isTarget = !isNaN(st) && i + 1 === st;
     const isOk = plctLastOk && plc === plctLastOk.plc && i + 1 === plctLastOk.station && r.echoStation[i] === plctLastOk.cmd;
-    const cls = isOk ? ' class="hl-ok"' : isTarget ? ' class="hl-target"' : '';
-    h += `<tr${cls}><td>${307 + i}</td><td>${r.echoStation[i]}</td><td>站口${i + 1} 命令回显</td></tr>`;
+    rows.push({ cls: isOk ? 'hl-ok' : isTarget ? 'hl-target' : '', cells: [{ t: 'text', v: 307 + i }, { t: 'text', v: r.echoStation[i] }, { t: 'text', v: `站口${i + 1} 命令回显` }] });
   }
-  h += `<tr><td>323</td><td>${r.scanStation}</td><td>扫码站口号</td></tr>` +
-    `<tr><td>324~339</td><td>${esc(r.scanCode || '—')}</td><td>货物扫码号</td></tr>` +
-    `<tr><td>340</td><td>${r.handshake}</td><td>握手（1=PLC 请求）</td></tr>`;
-  el.innerHTML = h;
-  // 当前 400 值（regread 单独读；与状态区共用轮询节奏）
-  const cur = await plctRegRead(plc, 400, 1);
-  document.getElementById('plctCur400').textContent = cur ? cur[0] : '—';
+  rows.push({ cells: [{ t: 'text', v: 323 }, { t: 'text', v: r.scanStation }, { t: 'text', v: '扫码站口号' }] });
+  rows.push({ cells: [{ t: 'text', v: '324~339' }, { t: 'text', v: esc(r.scanCode || '—') }, { t: 'text', v: '货物扫码号' }] });
+  rows.push({ cells: [{ t: 'text', v: 340 }, { t: 'text', v: r.handshake }, { t: 'text', v: '握手（1=PLC 请求）' }] });
+  buildRegTable(el, { cols: ['地址', '值', '含义'], rows });
+  // 当前 400 值 → 用 306 回显（命令区为写区禁读，实测读会掉线；306=最后执行的 400 编号）
+  document.getElementById('plctCur400').textContent = r.echoNo;
 }

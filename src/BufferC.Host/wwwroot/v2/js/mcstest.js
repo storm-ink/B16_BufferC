@@ -12,13 +12,14 @@ async function cimState(online) {
 }
 
 async function invRefresh() {
-  const box = document.getElementById('tbl-inv');
+  const box = document.getElementById('tbl-inv-body');
+  const wrap = document.getElementById('invWrap');
   try {
-    const j = await (await fetch('/api/inventory')).json();
-    const ss = j.stations || [];
-    clearError(box);
+    const res = await apiGet('/api/inventory');
+    if (!res.fresh) return;   // 过期响应丢弃
+    const ss = res.data.stations || [];
+    clearError(wrap);
     box.innerHTML =
-      '<tr><th>设备号</th><th>位置号</th><th>单位状态</th><th>站口状态</th><th>载具ID</th><th>来源</th><th>报警码</th><th>数据更新时间</th><th>命令状态</th><th>命令类型</th><th>命令载具</th><th>命令时间</th><th>命令编号</th><th>命令来源</th></tr>' +
       (ss.length ? ss.map(x => `<tr>
         <td>${esc(x.deviceNo)}</td>
         <td>${esc(x.unitId)}</td>
@@ -36,7 +37,7 @@ async function invRefresh() {
         <td>${esc(x.cmdSource) || '—'}</td>
       </tr>`).join('')
                  : '<tr><td colspan="14" class="empty-row">（无 PLC 配置）</td></tr>');
-  } catch (e) { reportError(box, e); }
+  } catch (e) { reportError(wrap, e); }
 }
 
 async function inventoryRequest() {
@@ -66,36 +67,33 @@ function mcsBuild() {
   if (mcsBuilt) return;
 
   // 快速区 0~49（原始寄存器表：地址 | 值 | 说明，纯手改）
-  let h = '<tr><th>地址</th><th>值</th><th>说明</th></tr>';
-  const rows = [[0, 'Buffer 编号'], [1, '告警汇总']];
-  for (let i = 0; i < 16; i++) rows.push([2 + i, `站口${i + 1} 状态（0空/1有货/2正放/3正取/4故障/5人工有货）`]);
-  for (let i = 0; i < 16; i++) rows.push([18 + i, `站口${i + 1} 告警码（0=无告警）`]);
-  for (let i = 0; i < 16; i++) rows.push([34 + i, `站口${i + 1} 可用（0=在服/1=停服）`]);
-  h += rows.map(([a, d]) =>
-    `<tr><td class="mono">${a}</td><td><input data-m="${a}" size="6" data-enter="blur" data-action="mcs-write-cell"></td><td>${d}</td></tr>`).join('');
-  document.getElementById('tbl-mcs-fast').innerHTML = h;
+  const fastRows = [{ cells: [{ t: 'raw', attrs: 'class="mono"', v: 0 }, { t: 'm', k: 0 }, { t: 'text', v: 'Buffer 编号' }] },
+                    { cells: [{ t: 'raw', attrs: 'class="mono"', v: 1 }, { t: 'm', k: 1 }, { t: 'text', v: '告警汇总' }] }];
+  for (let i = 0; i < 16; i++) fastRows.push({ cells: [{ t: 'raw', attrs: 'class="mono"', v: 2 + i }, { t: 'm', k: 2 + i }, { t: 'text', v: `站口${i + 1} 状态（0空/1有货/2正放/3正取/4故障/5人工有货）` }] });
+  for (let i = 0; i < 16; i++) fastRows.push({ cells: [{ t: 'raw', attrs: 'class="mono"', v: 18 + i }, { t: 'm', k: 18 + i }, { t: 'text', v: `站口${i + 1} 告警码（0=无告警）` }] });
+  for (let i = 0; i < 16; i++) fastRows.push({ cells: [{ t: 'raw', attrs: 'class="mono"', v: 34 + i }, { t: 'm', k: 34 + i }, { t: 'text', v: `站口${i + 1} 可用（0=在服/1=停服）` }] });
+  buildRegTable(document.getElementById('tbl-mcs-fast'), { cols: ['地址', '值', '说明'], rows: fastRows });
 
   // ID 区 50~305：文本输入（agtPackAscii 16 字写回）
-  h = '<tr><th>站口</th><th>地址</th><th>货物 ID（≤32 字符，回车写回）</th></tr>';
+  const idRows = [];
   for (let st = 1; st <= 16; st++)
-    h += `<tr><td>站口${st}</td><td class="mono">${50 + (st - 1) * 16}~${65 + (st - 1) * 16}</td>` +
-      `<td><input data-mid="${st}" size="36" data-enter="blur" data-action="mcs-write-id"></td></tr>`;
-  document.getElementById('tbl-mcs-id').innerHTML = h;
+    idRows.push({ cells: [{ t: 'text', v: `站口${st}` }, { t: 'raw', attrs: 'class="mono"', v: `${50 + (st - 1) * 16}~${65 + (st - 1) * 16}` }, { t: 'mid', k: st }] });
+  buildRegTable(document.getElementById('tbl-mcs-id'), { cols: ['站口', '地址', '货物 ID（≤32 字符，回车写回）'], rows: idRows });
 
   // 扫码/握手
-  h = '<tr><th>地址</th><th>值</th><th>说明</th></tr>' +
-    `<tr><td class="mono">323</td><td><input data-m="323" size="6" data-enter="blur" data-action="mcs-write-cell"></td><td>扫码站口号（1~16）</td></tr>` +
-    `<tr><td class="mono">324~339</td><td><input id="mcsScanCode" size="36" data-enter="blur" data-action="mcs-write-scan"></td><td>扫码号文本（≤32 字符；BCR NG 用 UNK- 前缀）</td></tr>` +
-    `<tr><td class="mono">340</td><td><input data-m="340" size="6" data-enter="blur" data-action="mcs-write-cell"></td><td>握手：写 1 = PLC 请求扫码（BufferC 自动应答 0 → 501+201）</td></tr>`;
-  document.getElementById('tbl-mcs-scan').innerHTML = h;
+  const scanRows = [
+    { cells: [{ t: 'raw', attrs: 'class="mono"', v: 323 }, { t: 'm', k: 323 }, { t: 'text', v: '扫码站口号（1~16）' }] },
+    { cells: [{ t: 'raw', attrs: 'class="mono"', v: '324~339' }, { t: 'scan' }, { t: 'text', v: '扫码号文本（≤32 字符；BCR NG 用 UNK- 前缀）' }] },
+    { cells: [{ t: 'raw', attrs: 'class="mono"', v: 340 }, { t: 'm', k: 340 }, { t: 'text', v: '握手：写 1 = PLC 请求扫码（BufferC 自动应答 0 → 501+201）' }] },
+  ];
+  buildRegTable(document.getElementById('tbl-mcs-scan'), { cols: ['地址', '值', '说明'], rows: scanRows });
 
   // 只读：回显 + 当前 400
-  h = '<tr><th>地址</th><th>值</th><th>说明</th></tr>' +
-    `<tr><td class="mono">306</td><td data-r="306"></td><td>命令编号回显</td></tr>`;
+  const echoRows = [{ cells: [{ t: 'raw', attrs: 'class="mono"', v: 306 }, { t: 'r', k: 306 }, { t: 'text', v: '命令编号回显' }] }];
   for (let i = 0; i < 16; i++)
-    h += `<tr><td class="mono">${307 + i}</td><td data-r="${307 + i}"></td><td>站口${i + 1} 命令回显</td></tr>`;
-  h += `<tr><td class="mono">400</td><td id="mcsCur400">—</td><td>命令编号（当前值，401~672 见 PLC 详情页）</td></tr>`;
-  document.getElementById('tbl-mcs-echo').innerHTML = h;
+    echoRows.push({ cells: [{ t: 'raw', attrs: 'class="mono"', v: 307 + i }, { t: 'r', k: 307 + i }, { t: 'text', v: `站口${i + 1} 命令回显` }] });
+  echoRows.push({ cells: [{ t: 'raw', attrs: 'class="mono"', v: 400 }, { t: 'id', k: 'mcsCur400', v: '—' }, { t: 'text', v: '命令编号（当前值，401~672 见 PLC 详情页）' }] });
+  buildRegTable(document.getElementById('tbl-mcs-echo'), { cols: ['地址', '值', '说明'], rows: echoRows });
 
   mcsBuilt = true;
 }
@@ -127,7 +125,9 @@ async function mcsRefresh(s) {
   if (mcsLastIdRead + 3000 <= Date.now()) {
     mcsLastIdRead = Date.now();
     try {
-      const vals = await readRegBlocks(plc, 50, 256);
+      // 单次大段读（后端持锁连续分段）；帧长受限自动降级
+      let vals = await regRead(plc, 50, 256);
+      if (!vals) vals = await readRegBlocks(plc, 50, 256);
       clearError(document.getElementById('tbl-mcs-id'));
       for (let st = 1; st <= 16; st++) {
         const el = document.querySelector(`#tbl-mcs-id [data-mid="${st}"]`);
@@ -137,9 +137,9 @@ async function mcsRefresh(s) {
       }
     } catch (e) { reportError(document.getElementById('tbl-mcs-id'), e); }
   }
-  const cur = await plctRegRead(plc, 400, 1);
+  // 当前 400 值 → 用 306 回显（命令区为写区禁读，实测读会掉线）
   const c400 = document.getElementById('mcsCur400');
-  if (c400 && cur) c400.textContent = cur[0];
+  if (c400 && p) c400.textContent = p.registers.echoNo;
 }
 
 async function mcsWriteCell(el) {
@@ -182,8 +182,9 @@ async function loadMcsTraffic() {
   if (mcsTrafficPaused) return;
   const box = document.getElementById('mcsTrafficList');
   try {
-    const d = await (await fetch('/api/hsms/traffic?tail=50')).json();
-    const t = (d.traffic || []).filter(x => !mcsTrafficDir || x.direction === mcsTrafficDir);
+    const res = await apiGet('/api/hsms/traffic?tail=50');
+    if (!res.fresh) return;   // 过期响应丢弃
+    const t = (res.data.traffic || []).filter(x => !mcsTrafficDir || x.direction === mcsTrafficDir);
     clearError(box);
     box.innerHTML = t.map(x => {
       const k = mcsTrafficKey(x), open = mcsExpanded.has(k);
@@ -214,7 +215,9 @@ function mcsTogglePause(btn) {
 async function loadMcsEvents() {
   const box = document.getElementById('tbl-mcsevents');
   try {
-    const ev = await (await fetch('/api/events?tail=20')).json();
+    const res = await apiGet('/api/events?tail=20');
+    if (!res.fresh) return;   // 过期响应丢弃
+    const ev = res.data;
     clearError(box);
     box.innerHTML =
       '<tr><th>时间</th><th>CEID</th><th>描述</th></tr>' +

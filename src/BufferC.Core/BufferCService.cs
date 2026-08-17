@@ -24,13 +24,15 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
     private HsmsServer? _hsms;
     private AgvcClient? _agvc;                              // 出站 AGVC 客户端（baseUrl 空=不启用）
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _agvcArrivalTimers = new();
+    private readonly ConcurrentDictionary<string, bool> _scanUnk = new();   // D3："plc:st" → 扫码码是否 UNK 前缀（worker 发 501 的 IDReadStatus）
+    private readonly SemaphoreSlim[] _cmdSignals = Enumerable.Range(0, 15).Select(_ => new SemaphoreSlim(0)).ToArray();   // D2：每 PLC 命令入队信号（替代 200ms 忙轮询）
     private LogLevel _minLevel = LogLevel.Info;             // 启动按 cfg.LogLevel 解析；/api/debug 可运行时切换
     private long _logSeq;
 
     public BufferCService(BufferCConfig cfg)
     {
         _cfg = cfg;
-        _inv = new Inventory(cfg.DbPath, cfg.Plcs.Count, Log);   // 站口主表：开机建满 机台数×16 行；日志收编入统一管道
+        _inv = new Inventory(cfg.DbPath, cfg.Plcs.Count, Log, cfg.HistoryRetentionRows);   // 站口主表：开机建满 机台数×16 行；日志收编入统一管道
         _minLevel = Enum.TryParse<LogLevel>(cfg.LogLevel, true, out var lv) ? lv : LogLevel.Info;
     }
 
@@ -503,8 +505,19 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
         if (FindPoller(plc) == null) { Log("CMD", $"PLC{plc} 不存在", LogLevel.Warn); return false; }
         var srcNorm = source == "AGVC" ? "AGV" : source;   // 台账来源归一（AGVC→AGV）
         _inv.QueueCommand(plc, st, RegisterMap.CmdWrite, carrierId, srcNorm);
+        _cmdSignals[plc - 1].Release();   // D2：唤醒该 PLC 的工作线程
         Audit("CMD", $"安装已入队（异步执行）: PLC{plc} 站口{st} {carrierId} 来源={srcNorm}");
         return true;
+    }
+
+    /// <summary>扫码握手命令投递（D3）：poller 只投递不阻塞（消除 ≤10s 轮询盲区）；执行/501/201 由命令工作线程完成。
+    /// 扫码开始即 MarkScanInstalled（抑制并发 0→1 的 204；命令失败残留键由取出路径清理）。</summary>
+    public void EnqueueScan(int plcIndex, int station, string scanCode)
+    {
+        _scanUnk[$"{plcIndex}:{station}"] = scanCode.StartsWith("UNK");
+        _engine.MarkScanInstalled(plcIndex, station);
+        Log("PLC", $"扫码握手: PLC{plcIndex} 站口{station} 码=\"{scanCode}\" 已入队（异步执行）", LogLevel.Info);
+        ManualInstall(scanCode, EventEngine.Loc(plcIndex, station), "SCAN");
     }
 
     /// <summary>移除载具——异步命令：先写表（cmd_state=1）返回 true，后台执行成功后刷表 + 发 202</summary>
@@ -516,6 +529,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
             return false;
         }
         _inv.QueueCommand(plc, st, RegisterMap.CmdClear, carrierId, source);
+        _cmdSignals[plc - 1].Release();   // D2：唤醒该 PLC 的工作线程
         Audit("CMD", $"移除已入队（异步执行）: PLC{plc} 站口{st} {carrierId} 来源={source}");
         return true;
     }
@@ -568,7 +582,19 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
                         if (row.CmdType == RegisterMap.CmdWrite)
                         {
                             CancelAgvcArrivalTimer(row.PlcIndex, st);   // 命令已写入 ID，取消「找 AGVC 要 ID」计时
-                            _inv.SetCarrier(row.PlcIndex, st, row.CmdCarrierId, locNorm, row.CmdSource);
+                            if (row.CmdSource == "SCAN")
+                            {
+                                // 扫码路径（D3 异步化）：补 501（IDReadStatus：UNK 前缀=1）+ 事件流/历史记录；台账来源归一 MANUAL
+                                bool unk = _scanUnk.TryGetValue($"{row.PlcIndex}:{st}", out var u) && u;
+                                _scanUnk.TryRemove($"{row.PlcIndex}:{st}", out _);
+                                var now = DateTime.Now;
+                                string desc501 = $"CarrierIdRead CarrierID={row.CmdCarrierId} CarrierLoc={locNorm}";
+                                _events.Add(new EventEntry(now, 501, desc501));
+                                _inv.AddEventHistory(now, 501, desc501);
+                                SendEvent(501, 5, SecsEncode.L(SecsEncode.A(row.CmdCarrierId), SecsEncode.A(locNorm),
+                                    SecsEncode.U2(unk ? (ushort)1 : (ushort)0)), $"PLC{row.PlcIndex} 站口{st} {row.CmdCarrierId}");
+                            }
+                            _inv.SetCarrier(row.PlcIndex, st, row.CmdCarrierId, locNorm, row.CmdSource == "SCAN" ? "MANUAL" : row.CmdSource);
                             _inv.CompleteCommand(row.PlcIndex, st, poller.Channel.LastSeq);
                             SendEvent(201, 2, SecsEncode.L(SecsEncode.A(row.CmdCarrierId), SecsEncode.A(locNorm)),
                                 $"PLC{row.PlcIndex} 站口{st} {row.CmdCarrierId}");
@@ -601,7 +627,8 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
                 }
             }
             catch (Exception e) { LogException("CMD", $"PLC{plcIndex} 命令工作线程异常", e, LogLevel.Error); }
-            await Task.Delay(200, ct);
+            // D2：信号驱动（入队即唤醒）；2s 超时兜底（覆盖断线保持待执行后的重连场景等边缘遗漏）
+            await _cmdSignals[plcIndex - 1].WaitAsync(TimeSpan.FromSeconds(2), ct);
         }
     }
 
@@ -622,6 +649,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
         foreach (var row in _inv.RequeueStaleCommands())
         {
             Audit("CMD", $"重启恢复: PLC{row.PlcIndex} 站口{row.Station} 未完成命令重执行（恢复待校验） {row.CmdType} {row.CmdCarrierId} @ {row.UnitId}");
+            _cmdSignals[row.PlcIndex - 1].Release();   // D2：唤醒对应 PLC 工作线程处理恢复行
         }
     }
 

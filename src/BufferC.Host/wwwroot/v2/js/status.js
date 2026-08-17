@@ -1,19 +1,22 @@
-// status.js — 状态轮询 + 总览 + PLC 详情（导出: loadStatus, renderStatusBar, renderOverview, fillPlcSelects, detPlcChanged, getDetPlc, buildDetail, renderDetail, regRead, readRegBlocks, readIdRaw, readCmdRaw）
+// status.js — 状态轮询 + 总览 + PLC 详情（导出: loadStatus, renderStatusBar, renderOverview, fillPlcSelects, detPlcChanged, getDetPlc, buildDetail, renderDetail, regRead, readRegBlocks, readIdRaw）
 // 依赖: main.js 的 lastStatus/curPage/overviewKey/detPlc/detBuilt；protocol.js 的 unpackAscii/hex4
 
 // ---------- 状态轮询（常开：状态栏 + 当前页共用） ----------
 async function loadStatus() {
   try {
-    const s = await (await fetch('/api/status')).json();
+    const res = await apiGet('/api/status');
+    if (!res.fresh) return;   // 过期响应丢弃
+    const s = res.data;
     lastStatus = s;
     fillPlcSelects(s.plcs);
     renderStatusBar(s);
+    if (typeof screenMode !== 'undefined' && screenMode) renderScreenDash(s);
     if (curPage === 'overview') renderOverview(s);
     if (curPage === 'plcdetail') renderDetail(s);
     if (curPage === 'plctest') renderPlctEcho();
     if (curPage === 'mcstest') { mcsBuild(); mcsRefresh(s); }
   } catch (e) {
-    document.getElementById('statusbar').innerHTML = `<span class="badge b-err">加载失败: ${e}</span>`;
+    document.getElementById('statusbar').innerHTML = `<span class="badge b-err">加载失败: ${esc(e)}</span>`;
   }
 }
 
@@ -36,7 +39,8 @@ function renderStatusBar(s) {
     tile('告警', String(unacked), unacked ? 't-crit alarm-on' : 't-ok', unacked ? (s.alarms.length - unacked ? `共 ${s.alarms.length} 条` : '未确认') : '无告警') +
     tile('运行', fmtDur(Date.now() - new Date(sys.startedAt).getTime())) +
     tile('版本', `${esc(sys.mdln)} ${esc(sys.softRev)}`) +
-    tile('字节序', esc(sys.byteOrderSummary || '—'));
+    tile('字节序', esc(sys.byteOrderSummary || '—')) +
+    `<button class="bar-btn" data-action="enter-screen">大屏</button>`;
 }
 
 // ---------- 总览：15 台紧凑表（首建 + 原地更新） ----------
@@ -101,27 +105,25 @@ function buildDetail(p) {
   document.getElementById('detGrid').innerHTML =
     Array.from({ length: 16 }, (_, i) => `<div class="cell" id="det-cell-${i + 1}"></div>`).join('');
 
-  const tr = (addr, key, name) => `<tr><td>${addr}</td><td data-r="${key}"></td><td>${name}</td></tr>`;
-  // 严格按地址 0→49 从上到下排（0 编号、1 告警汇总、2~17 站口状态、18~33 站口告警码、34~49 站口可用）
-  let html = tr(0, 0, 'Buffer 编号') + tr(1, 1, '告警汇总');
-  for (let i = 0; i < 16; i++) html += tr(2 + i, 2 + i, `站口${i + 1} 状态`);
-  for (let i = 0; i < 16; i++) html += tr(18 + i, 18 + i, `站口${i + 1} 告警码`);
-  for (let i = 0; i < 16; i++) html += tr(34 + i, 34 + i, `站口${i + 1} 可用(0=在线 1=下线)`);
-  document.getElementById('tbl-reg-status').innerHTML = '<tr><th>地址</th><th>值</th><th>含义</th></tr>' + html;
+  // 状态区：严格按地址 0→49 从上到下排（0 编号、1 告警汇总、2~17 站口状态、18~33 站口告警码、34~49 站口可用）
+  const addrRow = (addr, key, name) => ({ cells: [{ t: 'text', v: addr }, { t: 'r', k: key }, { t: 'text', v: name }] });
+  const statusRows = [addrRow(0, 0, 'Buffer 编号'), addrRow(1, 1, '告警汇总')];
+  for (let i = 0; i < 16; i++) statusRows.push(addrRow(2 + i, 2 + i, `站口${i + 1} 状态`));
+  for (let i = 0; i < 16; i++) statusRows.push(addrRow(18 + i, 18 + i, `站口${i + 1} 告警码`));
+  for (let i = 0; i < 16; i++) statusRows.push(addrRow(34 + i, 34 + i, `站口${i + 1} 可用(0=在线 1=下线)`));
+  buildRegTable(document.getElementById('tbl-reg-status'), { cols: ['地址', '值', '含义'], rows: statusRows });
 
-  html = tr(306, 306, '命令编号回显');
-  for (let i = 0; i < 16; i++) html += tr(307 + i, 307 + i, `站口${i + 1} 命令回显`);
-  html += tr(323, 323, '扫码站口号') + `<tr><td>324~339</td><td id="det-scan"></td><td>货物扫码号</td></tr>` + tr(340, 340, '握手(1=PLC请求)');
-  document.getElementById('tbl-reg-echo').innerHTML = '<tr><th>地址</th><th>值</th><th>含义</th></tr>' + html;
+  const echoRows = [addrRow(306, 306, '命令编号回显')];
+  for (let i = 0; i < 16; i++) echoRows.push(addrRow(307 + i, 307 + i, `站口${i + 1} 命令回显`));
+  echoRows.push(addrRow(323, 323, '扫码站口号'));
+  echoRows.push({ cells: [{ t: 'text', v: '324~339' }, { t: 'id', k: 'det-scan' }, { t: 'text', v: '货物扫码号' }] });
+  echoRows.push(addrRow(340, 340, '握手(1=PLC请求)'));
+  buildRegTable(document.getElementById('tbl-reg-echo'), { cols: ['地址', '值', '含义'], rows: echoRows });
 
-  html = '<tr><th>站口</th><th>地址</th><th>载具ID（快照）</th><th>HEX（原始值）</th></tr>';
+  const idRows = [];
   for (let st = 1; st <= 16; st++)
-    html += `<tr><td>站口${st}</td><td class="mono">${50 + (st - 1) * 16}~${65 + (st - 1) * 16}</td><td data-sid="${st}"></td><td class="mono" data-hid="${st}">—</td></tr>`;
-  document.getElementById('tbl-reg-id').innerHTML = html;
-
-  html = '<tr><th>地址</th><th>值</th><th>含义</th></tr>' + tr(400, 'c0', '命令编号（写入）');
-  for (let st = 1; st <= 16; st++) html += tr(401 + st - 1, `c${st}`, `站口${st} 命令`);
-  document.getElementById('tbl-reg-cmd').innerHTML = html;
+    idRows.push({ cells: [{ t: 'text', v: `站口${st}` }, { t: 'raw', attrs: 'class="mono"', v: `${50 + (st - 1) * 16}~${65 + (st - 1) * 16}` }, { t: 'sid', k: st }, { t: 'hid', k: st }] });
+  buildRegTable(document.getElementById('tbl-reg-id'), { cols: ['站口', '地址', '载具ID（快照）', 'HEX（原始值）'], rows: idRows });
 
   detBuilt = true;
 }
@@ -147,7 +149,11 @@ function renderDetail(s) {
       (x.avail ? '<span class="offline-mark">下线</span>' : '');
   }
 
-  // 寄存器值表（原地更新，[data-r] 按地址填值）
+  fillRegTables(p);
+}
+
+// 寄存器值表原地更新（[data-r]/[data-sid] 按地址填值；表在 PLC 单机测试页，设备详情页与单机测试页共用）
+function fillRegTables(p) {
   const r = p.registers;
   const v = {};
   v[0] = r.bufferNo; v[1] = r.alarmSummary;
@@ -155,9 +161,10 @@ function renderDetail(s) {
   v[306] = r.echoNo;
   for (let i = 0; i < 16; i++) v[307 + i] = r.echoStation[i];
   v[323] = r.scanStation; v[340] = r.handshake;
-  for (const td of document.querySelectorAll('#page-plcdetail [data-r]'))
+  for (const td of document.querySelectorAll('#page-plctest [data-r], #page-plcdetail [data-r]'))
     if (td.dataset.r in v) td.textContent = v[td.dataset.r];   // 仅快照键（c* 命令区按需读取的值不覆盖）
-  document.getElementById('det-scan').textContent = r.scanCode || '—';
+  const scan = document.getElementById('det-scan');
+  if (scan) scan.textContent = r.scanCode || '—';
 
   // ID 区快照字符串（原地更新）
   for (const x of p.stations) {
@@ -193,12 +200,21 @@ async function readRegBlocks(plc, addr, total) {
   return vals;
 }
 
+// 目标 PLC：优先取单机测试页的 PLC 输入（寄存器视图已迁至该页），否则退回设备详情页选择
+function regTargetPlc() {
+  const n = typeof plctNum === 'function' ? plctNum() : NaN;
+  return !isNaN(n) ? n : detPlc;
+}
+
 async function readIdRaw() {
-  if (detPlc == null) return;
+  const plc = regTargetPlc();
+  if (plc == null) return;
   const box = document.getElementById('regIdRaw');
   box.innerHTML = '<span class="stat-line">读取中…</span>';
   try {
-    const vals = await readRegBlocks(detPlc, 50, 256);
+    // 单次大段读（后端持锁连续分段，不被轮询插队）；真 PLC 帧长受限时自动降级 125→16 小片
+    let vals = await regRead(plc, 50, 256);
+    if (!vals) vals = await readRegBlocks(plc, 50, 256);
     const bo = document.getElementById('detByteOrder').textContent;
     for (let st = 1; st <= 16; st++) {
       const words = vals.slice((st - 1) * 16, st * 16);
@@ -209,24 +225,3 @@ async function readIdRaw() {
   } catch (e) { box.innerHTML = `<span class="fail-txt">${e.message}</span>`; }
 }
 
-async function readCmdRaw() {
-  if (detPlc == null) return;
-  const box = document.getElementById('regCmdRaw');
-  box.innerHTML = '<span class="stat-line">读取中…</span>';
-  try {
-    const vals = await readRegBlocks(detPlc, 400, 273);
-    const bo = document.getElementById('detByteOrder').textContent;
-    const c0 = document.querySelector('#tbl-reg-cmd [data-r="c0"]');
-    if (c0) c0.textContent = vals[0];
-    for (let st = 1; st <= 16; st++) {
-      const td = document.querySelector(`#tbl-reg-cmd [data-r="c${st}"]`);
-      if (td) td.textContent = vals[st];
-    }
-    let html = '';
-    for (let st = 1; st <= 16; st++) {
-      const words = vals.slice(17 + (st - 1) * 16, 17 + st * 16);
-      html += `<div>站口${st}（${417 + (st - 1) * 16}~${432 + (st - 1) * 16}）: "${unpackAscii(words, bo) || '—'}" <span class="mono">${words.map(hex4).join(' ')}</span></div>`;
-    }
-    box.innerHTML = html;
-  } catch (e) { box.innerHTML = `<span class="fail-txt">${e.message}</span>`; }
-}

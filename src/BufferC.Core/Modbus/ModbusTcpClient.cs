@@ -57,22 +57,25 @@ public sealed class ModbusTcpClient : IDisposable
         _tcp = null;
     }
 
-    public ushort[] ReadHoldingRegisters(ushort address, ushort count)
+    /// <summary>FC03 读保持寄存器。maxWords=每帧字数（≤125，Modbus 规范上限）；自动分段逐帧读取后拼接。
+    /// 整段持锁一次连续读（不被轮询插队）。现场 PLC 对长帧读慢/异常时用 16 字循环短读（轮询器同款已验证）。</summary>
+    public ushort[] ReadHoldingRegisters(ushort address, ushort count, int maxWords = 125)
     {
-        // FC03 单帧上限 125 字（Modbus 规范，真 PLC 超限拒收）：自动分段逐帧读取后拼接
-        const int maxWords = 125;
         var all = new ushort[count];
-        for (int off = 0; off < count; off += maxWords)
+        lock (_ioLock)
         {
-            int n = Math.Min(maxWords, count - off);
-            var resp = Transact(new byte[] { 0x03,
-                (byte)((address + off) >> 8), (byte)(address + off),
-                (byte)(n >> 8), (byte)n });
-            if (resp[0] == 0x83)
-                throw new ModbusException($"FC03 异常码 {resp[1]} @ {address + off}");
-            int byteCount = resp[1];
-            for (int i = 0; i < byteCount / 2; i++)
-                all[off + i] = (ushort)((resp[2 + i * 2] << 8) | resp[3 + i * 2]);
+            for (int off = 0; off < count; off += maxWords)
+            {
+                int n = Math.Min(maxWords, count - off);
+                var resp = TransactCore(new byte[] { 0x03,
+                    (byte)((address + off) >> 8), (byte)(address + off),
+                    (byte)(n >> 8), (byte)n });
+                if (resp[0] == 0x83)
+                    throw new ModbusException($"FC03 异常码 {resp[1]} @ {address + off}");
+                int byteCount = resp[1];
+                for (int i = 0; i < byteCount / 2; i++)
+                    all[off + i] = (ushort)((resp[2 + i * 2] << 8) | resp[3 + i * 2]);
+            }
         }
         return all;
     }
@@ -88,24 +91,27 @@ public sealed class ModbusTcpClient : IDisposable
 
     public void WriteMultipleRegisters(ushort address, ushort[] values)
     {
-        // FC16 单帧上限 123 字（Modbus 规范，真 PLC 超限拒收）：自动分段逐帧发送
+        // FC16 单帧上限 123 字（Modbus 规范，真 PLC 超限拒收）：自动分段逐帧发送；整段持锁一次连续写（与批量读同理）
         const int maxWords = 123;
-        for (int off = 0; off < values.Length; off += maxWords)
+        lock (_ioLock)
         {
-            int count = Math.Min(maxWords, values.Length - off);
-            var pdu = new byte[6 + count * 2];
-            pdu[0] = 0x10;
-            pdu[1] = (byte)((address + off) >> 8); pdu[2] = (byte)(address + off);
-            pdu[3] = (byte)(count >> 8); pdu[4] = (byte)count;
-            pdu[5] = (byte)(count * 2);
-            for (int i = 0; i < count; i++)
+            for (int off = 0; off < values.Length; off += maxWords)
             {
-                pdu[6 + i * 2] = (byte)(values[off + i] >> 8);
-                pdu[7 + i * 2] = (byte)values[off + i];
+                int count = Math.Min(maxWords, values.Length - off);
+                var pdu = new byte[6 + count * 2];
+                pdu[0] = 0x10;
+                pdu[1] = (byte)((address + off) >> 8); pdu[2] = (byte)(address + off);
+                pdu[3] = (byte)(count >> 8); pdu[4] = (byte)count;
+                pdu[5] = (byte)(count * 2);
+                for (int i = 0; i < count; i++)
+                {
+                    pdu[6 + i * 2] = (byte)(values[off + i] >> 8);
+                    pdu[7 + i * 2] = (byte)values[off + i];
+                }
+                var resp = TransactCore(pdu);
+                if (resp[0] == 0x90)
+                    throw new ModbusException($"FC16 异常码 {resp[1]} @ {address + off}");
             }
-            var resp = Transact(pdu);
-            if (resp[0] == 0x90)
-                throw new ModbusException($"FC16 异常码 {resp[1]} @ {address + off}");
         }
     }
 

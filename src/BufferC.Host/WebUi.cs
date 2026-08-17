@@ -51,15 +51,17 @@ public static class WebUi
         // AGVC 联调页：两接口手动触发（与自动路径同口径，调用同样进入 traffic 记录）
         // 注意：net6 minimal API 的 async 处理器在 await 后响应已开始，Json 助手设 StatusCode 会抛「Headers are read-only」
         // → 沿用全站同步处理器风格（阻塞式，与 ManualInstall 等命令路径一致）
-        app.MapPost("/api/agvc/manual/queryMachines", (HttpContext ctx, ManualQueryReq req) =>
+        // D8：异步处理器消除 sync-over-async（await 后返回 Results.Json、不手动碰 ctx.Response——
+        // 08-14 续 9 踩的「Headers are read-only」只在 await 后改 StatusCode 时才触发，此写法安全）
+        app.MapPost("/api/agvc/manual/queryMachines", async Task<IResult> (ManualQueryReq req) =>
         {
-            var (ok, msg) = service.ManualQueryMachines(req.CmsIndex).GetAwaiter().GetResult();
-            return Json(ctx, new { ok, message = msg });
+            var (ok, msg) = await service.ManualQueryMachines(req.CmsIndex);
+            return Results.Json(new { ok, message = msg });
         });
-        app.MapPost("/api/agvc/manual/pushDeviceStatusInfo", (HttpContext ctx, ManualPushReq req) =>
+        app.MapPost("/api/agvc/manual/pushDeviceStatusInfo", async Task<IResult> (ManualPushReq req) =>
         {
-            var (ok, msg) = service.ManualPushStatus(req.CmsIndex, req.Service, req.Present, req.TrayId).GetAwaiter().GetResult();
-            return Json(ctx, new { ok, message = msg });
+            var (ok, msg) = await service.ManualPushStatus(req.CmsIndex, req.Service, req.Present, req.TrayId);
+            return Results.Json(new { ok, message = msg });
         });
         app.MapGet("/api/logs", (HttpContext ctx, int? tail, string? category, string? level) =>
         {

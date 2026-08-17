@@ -38,13 +38,15 @@ public class FixRegressionTests
             var stream = tcp.GetStream();
             var s1f15 = new HsmsMessage { Stream = 1, Function = 15, WBit = false, SystemBytes = 1, Body = SecsEncode.L() };
             stream.Write(s1f15.ToBytes());
-            await Task.Delay(2500);
+            var deadline = Environment.TickCount64 + 8000;
+            while (svc.GetDebugInfo().Mcs.T3Timeout < 1 && Environment.TickCount64 < deadline) await Task.Delay(200);
             Assert.True(svc.GetDebugInfo().Mcs.T3Timeout >= 1, $"T3Ms=800 应已超时，实际 {svc.GetDebugInfo().Mcs.T3Timeout}");
 
             // 第二次：监控循环应继续工作（防静默死亡回归）
             var s1f15b = new HsmsMessage { Stream = 1, Function = 15, WBit = false, SystemBytes = 2, Body = SecsEncode.L() };
             stream.Write(s1f15b.ToBytes());
-            await Task.Delay(2500);
+            deadline = Environment.TickCount64 + 8000;
+            while (svc.GetDebugInfo().Mcs.T3Timeout < 2 && Environment.TickCount64 < deadline) await Task.Delay(200);
             Assert.True(svc.GetDebugInfo().Mcs.T3Timeout >= 2, $"第二次超时未发生（监控循环死亡？），实际 {svc.GetDebugInfo().Mcs.T3Timeout}");
         }
         finally

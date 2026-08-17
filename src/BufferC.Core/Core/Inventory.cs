@@ -35,10 +35,11 @@ public sealed class Inventory : IDisposable
     public ushort ControlState { get; private set; } = 5;   // SVID 14：固定 ONLINE REMOTE
     public ushort ScState { get; private set; } = 2;        // SVID 21：固定 PAUSED（MCS 现场约定）
 
-    public Inventory(string? dbPath = null, int plcCount = 1, Action<string, string, LogLevel>? log = null)
+    public Inventory(string? dbPath = null, int plcCount = 1, Action<string, string, LogLevel>? log = null, int historyCap = 2000)
     {
         _dbPath = dbPath;
         _log = log ?? ((c, m, lv) => Console.WriteLine($"[{c}] {m}"));
+        _historyCap = historyCap;
         if (dbPath != null) LoadFromDb();   // 先建表并加载已有行
         InitStations(plcCount);             // 建满行（缺的行同步落库，保证后续 UPDATE 有目标）
     }
@@ -340,8 +341,8 @@ public sealed class Inventory : IDisposable
         }
     }
 
-    // ---------- 历史持久化（B3：事件/命令/告警/悬空命令重启不丢；每表只保留最近 HistoryCap 条） ----------
-    private const int HistoryCap = 2000;
+    // ---------- 历史持久化（B3：事件/命令/告警/悬空命令重启不丢；每表只保留最近 _historyCap 条） ----------
+    private readonly int _historyCap;
 
     public sealed record HistoryEvent(DateTime Time, ushort Ceid, string Description);
     public sealed record HistoryCommand(DateTime Time, string Source, int Plc, int Station, string Cmd, bool Ok, long ElapsedMs, string CarrierId);
@@ -350,22 +351,22 @@ public sealed class Inventory : IDisposable
 
     public void AddEventHistory(DateTime t, ushort ceid, string desc) =>
         Exec("INSERT INTO history_events(time, ceid, description) VALUES($t,$c,$d); " +
-             $"DELETE FROM history_events WHERE id <= (SELECT MAX(id) FROM history_events) - {HistoryCap}",
+             $"DELETE FROM history_events WHERE id <= (SELECT MAX(id) FROM history_events) - {_historyCap}",
              ("$t", NowOf(t)), ("$c", (int)ceid), ("$d", desc));
 
     public void AddCommandHistory(DateTime t, string source, int plc, int station, string cmd, bool ok, long elapsedMs, string carrierId) =>
         Exec("INSERT INTO history_commands(time, source, plc, station, cmd, ok, elapsed_ms, carrier_id) VALUES($t,$s,$p,$st,$c,$o,$e,$id); " +
-             $"DELETE FROM history_commands WHERE id <= (SELECT MAX(id) FROM history_commands) - {HistoryCap}",
+             $"DELETE FROM history_commands WHERE id <= (SELECT MAX(id) FROM history_commands) - {_historyCap}",
              ("$t", NowOf(t)), ("$s", source), ("$p", plc), ("$st", station), ("$c", cmd), ("$o", ok ? 1 : 0), ("$e", elapsedMs), ("$id", carrierId));
 
     public void AddAlarmHistory(DateTime t, string unitId, uint alarmId, string text, string action) =>
         Exec("INSERT INTO history_alarms(time, unit_id, alarm_id, text, action) VALUES($t,$u,$a,$x,$act); " +
-             $"DELETE FROM history_alarms WHERE id <= (SELECT MAX(id) FROM history_alarms) - {HistoryCap}",
+             $"DELETE FROM history_alarms WHERE id <= (SELECT MAX(id) FROM history_alarms) - {_historyCap}",
              ("$t", NowOf(t)), ("$u", unitId), ("$a", (long)alarmId), ("$x", text), ("$act", action));
 
     public void AddFailedHistory(DateTime t, string source, string cmd, string carrierId, string loc) =>
         Exec("INSERT INTO history_failed(time, source, cmd, carrier_id, loc) VALUES($t,$s,$c,$id,$l); " +
-             $"DELETE FROM history_failed WHERE id <= (SELECT MAX(id) FROM history_failed) - {HistoryCap}",
+             $"DELETE FROM history_failed WHERE id <= (SELECT MAX(id) FROM history_failed) - {_historyCap}",
              ("$t", NowOf(t)), ("$s", source), ("$c", cmd), ("$id", carrierId), ("$l", loc));
 
     private static string NowOf(DateTime t) => t.ToString("yyyyMMddHHmmssfff");

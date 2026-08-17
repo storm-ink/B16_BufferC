@@ -1340,11 +1340,12 @@ public sealed class ScenarioTests : IAsyncLifetime
             plc.SetStationState(1, 0);
             Assert.NotNull(await mcs.WaitForEventAsync(203));
 
-            // 等推送落库（推送为 Task.Run 异步）：5 个事件 → 5 条推送
+            // 等推送落库（推送为 Task.Run 异步）：5 个事件 → 4 条推送
+            // （D3 扫码异步化后：501/201 由命令工作线程统一推一次，旧行为是两事件各推一次相同内容）
             var deadline = Environment.TickCount64 + 10000;
-            while (agvc.Requests.Count < 5 && Environment.TickCount64 < deadline) await Task.Delay(50);
+            while (agvc.Requests.Count < 4 && Environment.TickCount64 < deadline) await Task.Delay(50);
             var pushes = agvc.Requests.Where(r => r.Path == "/api/hsmsRpc/pushDeviceStatusInfo").ToList();
-            Assert.Equal(5, pushes.Count);
+            Assert.Equal(4, pushes.Count);
 
             var sigs = pushes.Select(p =>
             {

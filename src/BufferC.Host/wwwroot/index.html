@@ -119,9 +119,9 @@
         <div class="reg-raw" id="regIdRaw"><span class="stat-line">HEX 列点「读原始值」拉取 50~305（FC03×3）</span></div>
       </div>
       <div class="reg-col">
-        <h3>命令区 400~672 <button onclick="readCmdRaw()">读取</button></h3>
-        <table class="reg-table" id="tbl-reg-cmd"></table>
-        <div class="reg-raw" id="regCmdRaw"><span class="stat-line">点「读取」拉取 400~672（真 PLC 可能不映射该区，失败不影响其它栏）</span></div>
+        <h3>命令区 400~672 <span class="stat-line">（写区，PLC 禁止读）</span></h3>
+        <div class="reg-raw"><span class="stat-line">现场实测读命令区会导致 PLC 掉线——本栏不提供读取。
+        核对命令执行用回显区 306~322（自动刷新，306=当前命令编号）；操作命令请到「PLC 单机测试」页。</span></div>
       </div>
     </div>
   </div>
@@ -238,7 +238,7 @@
     </div>
     <div class="step"><span class="step-no">④</span> 写 400 编号（新值）触发 PLC 执行
       编号 <input id="plctSeqNo" placeholder="如 5" size="7" onkeydown="plctEnter(event, 'seq')">
-      <span class="stat-line">当前 PLC 400 = <b id="plctCur400">—</b>（填与当前不同的新值）</span>
+      <span class="stat-line">当前命令编号（306 回显=400） = <b id="plctCur400">—</b>（填与当前不同的新值；命令区写区禁读）</span>
       <button onclick="plctTrigger()">执行④</button>
     </div>
     <div class="step">
@@ -490,10 +490,6 @@ function buildDetail(p) {
     html += `<tr><td>站口${st}</td><td class="mono">${50 + (st - 1) * 16}~${65 + (st - 1) * 16}</td><td data-sid="${st}"></td><td class="mono" data-hid="${st}">—</td></tr>`;
   document.getElementById('tbl-reg-id').innerHTML = html;
 
-  html = '<tr><th>地址</th><th>值</th><th>含义</th></tr>' + tr(400, 'c0', '命令编号（写入）');
-  for (let st = 1; st <= 16; st++) html += tr(401 + st - 1, `c${st}`, `站口${st} 命令`);
-  document.getElementById('tbl-reg-cmd').innerHTML = html;
-
   detBuilt = true;
 }
 
@@ -582,7 +578,9 @@ async function readIdRaw() {
   const box = document.getElementById('regIdRaw');
   box.innerHTML = '<span class="stat-line">读取中…</span>';
   try {
-    const vals = await readRegBlocks(detPlc, 50, 256);
+    // 单次大段读（后端持锁连续分段，不被轮询插队）；真 PLC 帧长受限时自动降级 125→16 小片
+    let vals = await regRead(detPlc, 50, 256);
+    if (!vals) vals = await readRegBlocks(detPlc, 50, 256);
     const bo = document.getElementById('detByteOrder').textContent;
     for (let st = 1; st <= 16; st++) {
       const words = vals.slice((st - 1) * 16, st * 16);
@@ -590,28 +588,6 @@ async function readIdRaw() {
       if (td) td.innerHTML = `<div>${unpackAscii(words, bo) || '—'}</div><div class="mono">${words.map(hex4).join(' ')}</div>`;
     }
     box.innerHTML = `<span class="ok-txt">已读 50~305（256 字）</span>`;
-  } catch (e) { box.innerHTML = `<span class="fail-txt">${e.message}</span>`; }
-}
-
-async function readCmdRaw() {
-  if (detPlc == null) return;
-  const box = document.getElementById('regCmdRaw');
-  box.innerHTML = '<span class="stat-line">读取中…</span>';
-  try {
-    const vals = await readRegBlocks(detPlc, 400, 273);
-    const bo = document.getElementById('detByteOrder').textContent;
-    const c0 = document.querySelector('#tbl-reg-cmd [data-r="c0"]');
-    if (c0) c0.textContent = vals[0];
-    for (let st = 1; st <= 16; st++) {
-      const td = document.querySelector(`#tbl-reg-cmd [data-r="c${st}"]`);
-      if (td) td.textContent = vals[st];
-    }
-    let html = '';
-    for (let st = 1; st <= 16; st++) {
-      const words = vals.slice(17 + (st - 1) * 16, 17 + st * 16);
-      html += `<div>站口${st}（${417 + (st - 1) * 16}~${432 + (st - 1) * 16}）: "${unpackAscii(words, bo) || '—'}" <span class="mono">${words.map(hex4).join(' ')}</span></div>`;
-    }
-    box.innerHTML = html;
   } catch (e) { box.innerHTML = `<span class="fail-txt">${e.message}</span>`; }
 }
 
@@ -959,9 +935,8 @@ async function renderPlctEcho() {
     `<tr><td>324~339</td><td>${plctEsc(r.scanCode || '—')}</td><td>货物扫码号</td></tr>` +
     `<tr><td>340</td><td>${r.handshake}</td><td>握手（1=PLC 请求）</td></tr>`;
   el.innerHTML = h;
-  // 当前 400 值（regread 单独读；与状态区共用轮询节奏）
-  const cur = await plctRegRead(plc, 400, 1);
-  document.getElementById('plctCur400').textContent = cur ? cur[0] : '—';
+  // 当前 400 值 → 用 306 回显（命令区为写区禁读，实测读会掉线；306=最后执行的 400 编号）
+  document.getElementById('plctCur400').textContent = r.echoNo;
 }
 
 // ---------- AGVC 联调页（手动触发 + 发送记录） ----------
@@ -1125,7 +1100,7 @@ function mcsBuild() {
     `<tr><td class="mono">306</td><td data-r="306"></td><td>命令编号回显</td></tr>`;
   for (let i = 0; i < 16; i++)
     h += `<tr><td class="mono">${307 + i}</td><td data-r="${307 + i}"></td><td>站口${i + 1} 命令回显</td></tr>`;
-  h += `<tr><td class="mono">400</td><td id="mcsCur400">—</td><td>命令编号（当前值，401~672 见 PLC 详情页）</td></tr>`;
+  h += `<tr><td class="mono">400</td><td id="mcsCur400">—</td><td>命令编号（306 回显值；命令区写区禁读）</td></tr>`;
   document.getElementById('tbl-mcs-echo').innerHTML = h;
 
   mcsBuilt = true;
@@ -1154,11 +1129,12 @@ async function mcsRefresh(s) {
       td.textContent = v[+td.dataset.r] !== undefined ? v[+td.dataset.r] : '—';
   }
   if (isNaN(plc)) return;
-  // ID 区：快照仅状态变化时重读（会陈旧）→ 3s 节流直接 regread 假 PLC 实况
+  // ID 区：快照仅状态变化时重读（会陈旧）→ 3s 节流直接 regread 实况（单次大段读，帧长受限自动降级）
   if (mcsLastIdRead + 3000 <= Date.now()) {
     mcsLastIdRead = Date.now();
     try {
-      const vals = await readRegBlocks(plc, 50, 256);
+      let vals = await regRead(plc, 50, 256);
+      if (!vals) vals = await readRegBlocks(plc, 50, 256);
       for (let st = 1; st <= 16; st++) {
         const el = document.querySelector(`#tbl-mcs-id [data-mid="${st}"]`);
         if (!el || document.activeElement === el) continue;
@@ -1167,9 +1143,9 @@ async function mcsRefresh(s) {
       }
     } catch {}
   }
-  const cur = await plctRegRead(plc, 400, 1);
+  // 当前 400 值 → 用 306 回显（命令区为写区禁读，实测读会掉线）
   const c400 = document.getElementById('mcsCur400');
-  if (c400 && cur) c400.textContent = cur[0];
+  if (c400 && p) c400.textContent = p.registers.echoNo;
 }
 
 async function mcsWriteCell(el) {

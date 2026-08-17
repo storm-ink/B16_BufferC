@@ -9,6 +9,7 @@ public interface IEventSink
     void Emit(int plcIndex, IReadOnlyList<PlcEvent> events);
     void SyncSnapshot(PlcSnapshot snap);   // 每轮轮询后落表（站口主表：状态/告警/可用/ID 兜底）
     void Log(string category, string msg, LogLevel level = LogLevel.Info);
+    void EnqueueScan(int plcIndex, int station, string scanCode);   // 扫码握手命令投递（D3：poller 不阻塞，异步命令路径执行）
 }
 
 /// <summary>
@@ -48,7 +49,8 @@ public sealed class PlcPoller
     public PlcSnapshot? Snapshot => _snapCopy;
 
     // ---------- 寄存器直读写（Web「PLC 调试」面板联调用；断线抛 ModbusException/IOException） ----------
-    public ushort[] ReadRegs(int addr, int count) => _client.ReadHoldingRegisters((ushort)addr, (ushort)count);
+    public ushort[] ReadRegs(int addr, int count) =>
+        _client.ReadHoldingRegisters((ushort)addr, (ushort)count, _app.DebugReadChunkWords);   // Web 调试读：默认 16 字循环短读（现场长帧读慢/异常）
     public void WriteReg(int addr, ushort value) => _client.WriteSingleRegister((ushort)addr, value);
     public void WriteRegs(int addr, ushort[] values) => _client.WriteMultipleRegisters((ushort)addr, values);
 
@@ -108,7 +110,7 @@ public sealed class PlcPoller
                 _prevStates = null;                       // 重连后重新基线（含事件引擎，不补报）
                 _engine.Reset(_cfg.Index);
                 try { await Task.Delay(backoffMs, ct); } catch (OperationCanceledException) { break; }
-                backoffMs = Math.Min(backoffMs * 2, 30_000);
+                backoffMs = Math.Min(backoffMs * 2, _app.ReconnectMaxBackoffMs);
             }
         }
     }
@@ -159,39 +161,18 @@ public sealed class PlcPoller
         }
         _prevStates = (ushort[])curStates.Clone();
 
-        // 3. 扫码握手：340=1 → 应答 340=0 → 命令路径写入 → 501 + 201
-        var extra = new List<PlcEvent>();
+        // 3. 扫码握手：340=1 → 应答 340=0 → 投递异步命令（D3：不再阻塞轮询——
+        // 命令执行/501/201/台账由命令工作线程完成，poller 立即恢复轮询，消除 ≤10s 盲区）
         if (_snap.Handshake == 1)
         {
             int st = _snap.ScanStation;
-            bool failed = _snap.ScanCode.StartsWith("UNK");
             _client.WriteSingleRegister(RegisterMap.RegHandshake, 0);   // 应答
-            bool ok = _channel.Execute(st, RegisterMap.CmdWrite, _snap.ScanCode);
-            _sink.Log($"PLC{_cfg.Index}", $"扫码握手: 站口{st} 码=\"{_snap.ScanCode}\" 写入={(ok ? "OK" : "FAIL")}",
-                ok ? LogLevel.Info : LogLevel.Warn);
-            if (ok)
-            {
-                _engine.MarkScanInstalled(_cfg.Index, st);
-                extra.Add(new PlcEvent(EventKind.CarrierIdRead, new Dictionary<string, string>
-                {
-                    ["CarrierID"] = _snap.ScanCode,
-                    ["CarrierLoc"] = EventEngine.Loc(_cfg.Index, st),
-                    ["IDReadStatus"] = failed ? "1" : "0",
-                    ["Station"] = st.ToString(),
-                }));
-                extra.Add(new PlcEvent(EventKind.CarrierInstallCompleted, new Dictionary<string, string>
-                {
-                    ["CarrierID"] = _snap.ScanCode,
-                    ["CarrierLoc"] = EventEngine.Loc(_cfg.Index, st),
-                    ["Station"] = st.ToString(),
-                }));
-            }
+            _sink.EnqueueScan(_cfg.Index, st, _snap.ScanCode);
         }
 
         // 4. 事件推导 + 上报（快照先发布，供 SVID 查询；发布深拷贝：本对象每轮就地覆写，活对象会读到半轮混合状态）；随后同步站口主表（变化才写）
         _snapCopy = _snap.Clone();
         var events = _engine.Diff(_snap);
-        if (extra.Count > 0) events.AddRange(extra);
         if (events.Count > 0) _sink.Emit(_cfg.Index, events);
         _sink.SyncSnapshot(_snap);
     }

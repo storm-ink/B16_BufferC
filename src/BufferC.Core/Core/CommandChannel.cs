@@ -121,7 +121,7 @@ public sealed class CommandChannel
             {
                 // 轮询异常继续等待
             }
-            Thread.Sleep(100);   // 100ms 轮询粒度，避免错过窗口内的迟到回显
+            Thread.Sleep(_app.EchoPollIntervalMs);   // 轮询粒度（D6 配置化，默认 100ms），避免错过窗口内的迟到回显
         }
         return false;
     }
