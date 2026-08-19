@@ -97,5 +97,16 @@ export default async ({ ev, wait, baseUrl }) => {
     got: await ev(`({ strip: document.getElementById('pendingStrip').hidden, pending: document.getElementById('tab-pending').textContent.replace(/\\s+/g, ' ').slice(0, 40) })`),
   });
 
+  // PLC 单机测试页命令区：400~416 按需读取（2026-08-19）
+  await ev(`openPage('plctest'); true`);
+  await wait(2500);
+  await ev(`document.querySelector('[data-action="readCmdRaw"]').click(); true`);
+  await wait(1500);
+  out.push({
+    label: '命令区读 400~416 → 18 行（表头+400+16 站）值已填充 + 提示「已读」',
+    ok: await ev(`(() => { const rows = document.querySelectorAll('#tbl-reg-cmd tr'); const v400 = document.querySelector('#tbl-reg-cmd [data-r="400"]'); return rows.length === 18 && v400 && v400.textContent !== '' && document.getElementById('regCmdRaw').textContent.includes('已读 400~416'); })()`),
+    got: await ev(`(() => { const v400 = document.querySelector('#tbl-reg-cmd [data-r="400"]'); const v401 = document.querySelector('#tbl-reg-cmd [data-r="401"]'); return { 行数: document.querySelectorAll('#tbl-reg-cmd tr').length, 400: v400 ? v400.textContent : '?', 401: v401 ? v401.textContent : '?' }; })()`),
+  });
+
   return out;
 };

@@ -6,8 +6,8 @@
 <title>BufferC 缓冲库监控界面</title>
 <script>try{var t=localStorage.getItem('bc-theme');if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}</script>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%232a78d6'/%3E%3Ctext x='8' y='12' font-size='10' text-anchor='middle' fill='white'%3EB%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="css/app.css?v=20260819c">
-<link rel="stylesheet" href="css/screen.css?v=20260819c">
+<link rel="stylesheet" href="css/app.css?v=20260819d">
+<link rel="stylesheet" href="css/screen.css?v=20260819d">
 </head>
 <body>
 
@@ -195,9 +195,10 @@
         <div class="reg-raw" id="regIdRaw"><span class="stat-line">HEX 列点「读原始值」拉取 50~305（FC03×3）</span></div>
       </div>
       <div class="reg-col">
-        <h3>命令区 400~672 <span class="stat-line">（写区，PLC 禁止读）</span></h3>
-        <div class="reg-raw"><span class="stat-line">现场实测读命令区会导致 PLC 掉线——本栏不提供读取。
-        核对命令执行用回显区 306~322（自动刷新，306=当前命令编号）；操作命令请到「PLC 单机测试」页。</span></div>
+        <h3>命令区 400~416 <button data-action="readCmdRaw">读命令区</button></h3>
+        <table class="reg-table" id="tbl-reg-cmd"></table>
+        <div class="reg-raw" id="regCmdRaw"><span class="stat-line">400=命令编号（触发）、401~416=各站操作命令码（1=写入ID 2=清除）。
+        点「读命令区」按需读取——写区长读会导致真 PLC 掉线，只读前 17 字且失败自动降级 16 字小片。</span></div>
       </div>
     </div>
   </div>
@@ -316,16 +317,16 @@
   </div>
 </div>
 
-<script src="js/util.js?v=20260819c"></script>
-<script src="js/protocol.js?v=20260819c"></script>
-<script src="js/regtable.js?v=20260819c"></script>
-<script src="js/logs.js?v=20260819c"></script>
-<script src="js/events.js?v=20260819c"></script>
-<script src="js/pending.js?v=20260819c"></script>
-<script src="js/status.js?v=20260819c"></script>
-<script src="js/plctest.js?v=20260819c"></script>
-<script src="js/agvctest.js?v=20260819c"></script>
-<script src="js/mcstest.js?v=20260819c"></script>
-<script src="js/main.js?v=20260819c"></script>
+<script src="js/util.js?v=20260819d"></script>
+<script src="js/protocol.js?v=20260819d"></script>
+<script src="js/regtable.js?v=20260819d"></script>
+<script src="js/logs.js?v=20260819d"></script>
+<script src="js/events.js?v=20260819d"></script>
+<script src="js/pending.js?v=20260819d"></script>
+<script src="js/status.js?v=20260819d"></script>
+<script src="js/plctest.js?v=20260819d"></script>
+<script src="js/agvctest.js?v=20260819d"></script>
+<script src="js/mcstest.js?v=20260819d"></script>
+<script src="js/main.js?v=20260819d"></script>
 </body>
 </html>

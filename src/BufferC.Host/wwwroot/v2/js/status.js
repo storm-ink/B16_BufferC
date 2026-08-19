@@ -136,6 +136,11 @@ function buildDetail(p) {
     idRows.push({ cells: [{ t: 'text', v: `站口${st}` }, { t: 'raw', attrs: 'class="mono"', v: `${50 + (st - 1) * 16}~${65 + (st - 1) * 16}` }, { t: 'sid', k: st }, { t: 'hid', k: st }] });
   buildRegTable(document.getElementById('tbl-reg-id'), { cols: ['站口', '地址', '载具ID（快照）', 'HEX（原始值）'], rows: idRows });
 
+  // 命令区 400~416（按需读取，data-r 键为地址——fillRegTables 快照键只到 340，不会覆盖）
+  const cmdRows = [addrRow(400, 400, '命令编号（触发）')];
+  for (let i = 0; i < stCnt; i++) cmdRows.push(addrRow(401 + i, 401 + i, `站口${i + 1} 操作命令码（1=写入ID 2=清除）`));
+  buildRegTable(document.getElementById('tbl-reg-cmd'), { cols: ['地址', '值', '含义'], rows: cmdRows });
+
   detBuilt = true;
   detBuiltPlc = p.index;   // Q5：记录建表对应的 PLC（8/16 站行数不同，换 PLC 才重建表）
 }
@@ -243,6 +248,24 @@ async function readIdRaw() {
       if (td) td.innerHTML = `<div>${unpackAscii(words, bo) || '—'}</div><div class="mono">${words.map(hex4).join(' ')}</div>`;
     }
     box.innerHTML = `<span class="ok-txt">已读 50~305（256 字）</span>`;
+  } catch (e) { box.innerHTML = `<span class="fail-txt">${e.message}</span>`; }
+}
+
+// 命令区 400~416 按需读取（写区：只读前 17 字，失败自动降级 16 字小片——真 PLC 长读会掉线，2026-08-19 现场口径）
+async function readCmdRaw() {
+  const plc = regTargetPlc();
+  if (plc == null) return;
+  const box = document.getElementById('regCmdRaw');
+  box.innerHTML = '<span class="stat-line">读取中…</span>';
+  try {
+    let vals = await regRead(plc, 400, 17);
+    if (!vals) vals = await readRegBlocks(plc, 400, 17);
+    if (!vals || vals.length < 17) throw new Error('400~416 读取失败（PLC 未连接或该区禁读）');
+    for (let a = 400; a <= 416; a++) {
+      const td = document.querySelector(`#tbl-reg-cmd [data-r="${a}"]`);
+      if (td) td.textContent = vals[a - 400];
+    }
+    box.innerHTML = `<span class="ok-txt">已读 400~416（17 字）</span>`;
   } catch (e) { box.innerHTML = `<span class="fail-txt">${e.message}</span>`; }
 }
 
