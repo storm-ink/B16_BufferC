@@ -16,7 +16,8 @@ public sealed record DebugLevelReq(string Level);
 public sealed record DebugCmdReq(int Plc, int Station, ushort Cmd, string? CarrierId);
 public sealed record DebugRegWrite(int Plc, int Addr, ushort[] Values);
 public sealed record DebugCimReq(bool Online);
-public sealed record ManualQueryReq(string CmsIndex);
+public sealed record ManualQueryReq(string CmsIndex, string? ReqCode);
+public sealed record PendingFillReq(int Plc, int Station, string CarrierId);
 public sealed record ManualPushReq(string CmsIndex, string? Service, string? Present, string? TrayId);
 
 public static class WebUi
@@ -35,7 +36,7 @@ public static class WebUi
 
         // net6.0 minimal API 无 Results/IResult（.NET 7+）：统一走 Json 辅助，状态码用 HttpResponse 控制
         app.MapGet("/api/status", (HttpContext ctx) => Json(ctx, service.GetStatusView()));
-        app.MapGet("/api/alarms", (HttpContext ctx) => Json(ctx, service.Alarms));
+        app.MapGet("/api/alarms", (HttpContext ctx) => Json(ctx, service.AllAlarms));   // Web 面板含内部 9001；SVID3 走 service.Alarms（过滤 SYSTEM）
         app.MapGet("/api/commands", (HttpContext ctx, int? tail) => Json(ctx, new
         {
             history = service.GetCommands(tail ?? 50),        // 命令历史（活动面板）
@@ -55,7 +56,7 @@ public static class WebUi
         // 08-14 续 9 踩的「Headers are read-only」只在 await 后改 StatusCode 时才触发，此写法安全）
         app.MapPost("/api/agvc/manual/queryMachines", async Task<IResult> (ManualQueryReq req) =>
         {
-            var (ok, msg) = await service.ManualQueryMachines(req.CmsIndex);
+            var (ok, msg) = await service.ManualQueryMachines(req.CmsIndex, req.ReqCode);
             return Results.Json(new { ok, message = msg });
         });
         app.MapPost("/api/agvc/manual/pushDeviceStatusInfo", async Task<IResult> (ManualPushReq req) =>
@@ -122,6 +123,15 @@ public static class WebUi
         // 库存更新请求（1.2.6）：手动触发 S6F11 CEID 502，请求 MCS 下发 InventoryDataSend
         app.MapPost("/api/debug/inventory-request", (HttpContext ctx) =>
             Json(ctx, new { sent = service.TriggerInventoryUpdateRequest() }));
+        // 载具事件待补数据（2026-08-19）：列表 + 人工补填（写 PLC + 台账 → 统一上报）
+        app.MapGet("/api/pending-carrier-events", (HttpContext ctx) =>
+            Json(ctx, service.GetInventoryView().Where(r => r.PendingCeid != 0)));
+        app.MapPost("/api/pending-carrier-events/fill", (HttpContext ctx, PendingFillReq req) =>
+        {
+            var (ok, msg) = service.FillCarrierPending(req.Plc, req.Station, req.CarrierId);
+            return ok ? Json(ctx, new { ok, message = msg })
+                : Json(ctx, new { ok, message = msg }, StatusCodes.Status400BadRequest);
+        });
 
         app.StartAsync().GetAwaiter().GetResult();
         service.Log("Web", $"界面已启动 http://0.0.0.0:{port}");

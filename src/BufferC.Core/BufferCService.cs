@@ -43,11 +43,14 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
     public bool AllPlcsReady => _pollers.Count > 0 && _pollers.All(p => p.Snapshot != null);
 
     // ---------- IStatusProvider（表为中心：全部从 Inventory 表读，轮询器负责落表） ----------
-    public IReadOnlyList<CarrierStatus> Carriers => _inv.Carriers;
+    public IReadOnlyList<CarrierStatus> Carriers =>
+        _inv.Carriers.Where(c => c.CarrierId.Length > 0).ToList();   // SVID 1/15 只报有货且有 ID（现场口径 2026-08-17）；内部逻辑仍用 _inv.Carriers 全量
 
     public IReadOnlyList<UnitStatus> Units => _inv.Units;
 
-    public IReadOnlyList<AlarmStatus> Alarms => _inv.Alarms;
+    public IReadOnlyList<AlarmStatus> Alarms =>
+        _inv.Alarms.Where(a => a.UnitId != "SYSTEM").ToList();   // SVID3 只报 PLC 站口告警（现场口径 2026-08-17）；内部 9001 悬空命令告警不上报，S5F1 推送保留
+    public IReadOnlyList<AlarmStatus> AllAlarms => _inv.Alarms;  // Web 面板全量（含内部 9001）
 
     public ushort ControlState => _inv.ControlState;   // SVID 14
     public ushort ScState => _inv.ScState;             // SVID 21
@@ -80,6 +83,9 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
         // 重启恢复（未完成命令标记失败）
         RecoverStaleCommands();
         SeedHistoryFromDb();   // B3：历史回填环形缓冲（Web 面板重启后可查）
+        // 载具确认机制（2026-08-19）：中间态重启后继续等待（状态校验由首轮 SyncSnapshot 撤销逻辑处理）
+        foreach (var r in _inv.PendingCarrierRows)
+            Log("PLC", $"重启恢复: 载具事件 CEID {r.PendingCeid} 继续等待货物 ID: PLC{r.PlcIndex} 站口{r.Station}", LogLevel.Info);
 
         // AGVC 集成（方向1 出站）：baseUrl 配置后订阅 AGV 放入完成回调（2→1）
         if (!string.IsNullOrWhiteSpace(_cfg.Agvc.BaseUrl))
@@ -316,6 +322,43 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
     {
         for (int i = 0; i < snap.StationCount; i++)
             _inv.UpdateStationState(snap.PlcIndex, i + 1, snap.StationState[i], snap.StationAlarm[i], snap.StationAvail[i], snap.CarrierId[i]);
+        // 载具确认机制（2026-08-19）：中间态站口状态离开有货态 → 撤销 pending（含重启后首轮校验）
+        foreach (var r in _inv.PendingCarrierRows.Where(r => r.PlcIndex == snap.PlcIndex))
+        {
+            ushort cur = snap.StationState[r.Station - 1];
+            if (cur is RegisterMap.StHasCarrier or RegisterMap.StManualCarrier) continue;
+            _inv.ClearCarrierPending(r.PlcIndex, r.Station, "");
+            Log("PLC", $"载具事件 CEID {r.PendingCeid} 撤销（流程中断，状态离开有货态）: PLC{r.PlcIndex} 站口{r.Station}", LogLevel.Warn);
+            Audit("CMD", $"载具事件 CEID {r.PendingCeid} 撤销（流程中断）: PLC{r.PlcIndex} 站口{r.Station}");
+        }
+    }
+
+    /// <summary>SetCarrier 之后的统一上报出口（载具确认机制）：该站有 pending（204/201 等 ID）→ 上报 pending 事件并清中间态（pending_id 留痕）；无 → 上报 fallbackCeid</summary>
+    private void ReportCarrierReady(int plcIndex, int station, string carrierId, ushort fallbackCeid)
+    {
+        var loc = _engine.Loc(plcIndex, station);
+        var row = _inv.Ledger.FirstOrDefault(r => r.PlcIndex == plcIndex && r.Station == station);
+        ushort ceid = row != null && row.PendingCeid != 0 ? (ushort)row.PendingCeid : fallbackCeid;
+        SendEvent(ceid, 2, SecsEncode.L(SecsEncode.A(carrierId), SecsEncode.A(loc)), $"PLC{plcIndex} 站口{station} {carrierId}");
+        if (row != null && row.PendingCeid != 0)
+            _inv.ClearCarrierPending(plcIndex, station, carrierId);
+    }
+
+    /// <summary>人工补填等待中的载具 ID（2026-08-19）：校验 pending 存在且状态仍在有货态 → 命令路径写 PLC + 台账 → 统一上报</summary>
+    public (bool Ok, string Message) FillCarrierPending(int plcIndex, int station, string carrierId)
+    {
+        var row = _inv.PendingCarrierRows.FirstOrDefault(r => r.PlcIndex == plcIndex && r.Station == station);
+        if (row == null) return (false, "该站口无等待中的载具事件");
+        var poller = FindPoller(plcIndex);
+        if (poller == null) return (false, $"PLC{plcIndex} 未配置");
+        var snap = poller.Snapshot;
+        if (snap == null || snap.StationState[station - 1] is not (RegisterMap.StHasCarrier or RegisterMap.StManualCarrier))
+            return (false, "站口状态已离开有货态（不能补填）");
+        if (carrierId.Length == 0) return (false, "载具 ID 为空");
+        // 补填来源按等待事件推导：204 站的载具来自 AGV（人工只补 ID），201 站为人工放置
+        string source = row.PendingCeid == 204 ? "AGV" : "MANUAL";
+        bool ok = ManualInstall(carrierId, _engine.Loc(plcIndex, station), source);
+        return ok ? (true, "已补填并写 PLC，等待命令执行完成") : (false, "写入失败");
     }
 
     private static string DescribeEvent(PlcEvent ev)
@@ -336,23 +379,25 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
         switch (ev.Kind)
         {
             case EventKind.CarrierInstalled:
-                _inv.SetCarrier(plcIndex, st, p.GetValueOrDefault("CarrierID", ""), p.GetValueOrDefault("CarrierLoc", ""), "AGV");   // 204 自动放入
-                SendEvent(204, 2, Rpt2(p), $"PLC{plcIndex} 站口{st} {p.GetValueOrDefault("CarrierID", "")}");
+                // 204（AGV 放入）：登记中间态等货物 ID（AGVC 查询/前端补填）——数据完整才上报（载具确认机制 2026-08-19）
+                _inv.MarkCarrierPending(plcIndex, st, 204);
+                Log("PLC", $"载具事件 CEID 204 等待货物 ID: PLC{plcIndex} 站口{st}", LogLevel.Info);
+                Audit("CMD", $"载具事件 CEID 204 等待货物 ID: PLC{plcIndex} 站口{st}");
                 PushStationStatus(plcIndex, st);
                 break;
             case EventKind.CarrierRemoved:
-                _inv.RemoveCarrier(plcIndex, st, out _);
-                SendEvent(203, 2, Rpt2(p), $"PLC{plcIndex} 站口{st} {p.GetValueOrDefault("CarrierID", "")}");   // RPT2: CarrierID + CarrierLoc
+                HandleCarrierRemoved(plcIndex, st, 203);
                 PushStationStatus(plcIndex, st);
                 break;
             case EventKind.CarrierInstallCompleted:
-                _inv.SetCarrier(plcIndex, st, p.GetValueOrDefault("CarrierID", ""), p.GetValueOrDefault("CarrierLoc", ""), "MANUAL");   // 201 手动（含扫码）
-                SendEvent(201, 2, Rpt2(p), $"PLC{plcIndex} 站口{st} {p.GetValueOrDefault("CarrierID", "")}");
+                // 201（人工放入 0→5）：登记中间态等货物 ID（扫码/前端补填）——数据完整才上报
+                _inv.MarkCarrierPending(plcIndex, st, 201);
+                Log("PLC", $"载具事件 CEID 201 等待货物 ID: PLC{plcIndex} 站口{st}", LogLevel.Info);
+                Audit("CMD", $"载具事件 CEID 201 等待货物 ID: PLC{plcIndex} 站口{st}");
                 PushStationStatus(plcIndex, st, p.GetValueOrDefault("CarrierID", ""));
                 break;
             case EventKind.CarrierRemoveCompleted:
-                _inv.RemoveCarrier(plcIndex, st, out _);
-                SendEvent(202, 2, Rpt2(p), $"PLC{plcIndex} 站口{st} {p.GetValueOrDefault("CarrierID", "")}");
+                HandleCarrierRemoved(plcIndex, st, 202);
                 PushStationStatus(plcIndex, st);   // 与 203 一致：变化即推 AGVC
                 break;
             case EventKind.UnitInService:
@@ -412,6 +457,59 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
     {
         if (_hsms == null || !_hsms.SendS6F11(ceid, rptId, body))
             Log("HSMS", $"事件 CEID {ceid} 发送失败（MCS 未连接）: {desc}", LogLevel.Warn);
+    }
+
+    /// <summary>取走事件处理（203/202，载具确认机制 2026-08-19）：
+    /// 主表有完整载具 → 参数取主表 ID 立即上报 → 清主表 → 标准清除流程命令2 清 PLC ID 区；
+    /// 主表无载具（入货未完整就被取走）→ 异常：只记日志不上报，仍走命令2 清理。</summary>
+    private void HandleCarrierRemoved(int plcIndex, int st, ushort ceid)
+    {
+        if (!_inv.RemoveCarrier(plcIndex, st, out var removedId))
+        {
+            Log("PLC", $"取走事件 CEID {ceid} 但站口无货（主表无载具）: PLC{plcIndex} 站口{st}", LogLevel.Warn);
+            return;
+        }
+        var loc = _engine.Loc(plcIndex, st);
+        if (removedId.Length > 0)
+        {
+            // 正常取走：带主表 ID 上报（PLC 可能已先清 ID 区，参数以主表为准）
+            SendEvent(ceid, 2, SecsEncode.L(SecsEncode.A(removedId), SecsEncode.A(loc)), $"PLC{plcIndex} 站口{st} {removedId}");
+        }
+        else
+        {
+            // 异常：入货流程未完整（等 ID 期间就被取走）——只记日志不上报
+            Log("PLC", $"取走事件 CEID {ceid} 但载具未确认（入货流程未完整，不上报 MCS）: PLC{plcIndex} 站口{st}", LogLevel.Warn);
+            Audit("CMD", $"取走事件 CEID {ceid} 但载具未确认（入货流程未完整，不上报 MCS）: PLC{plcIndex} 站口{st}");
+        }
+        StartPlcClearTask(plcIndex, st);   // 两种情况都走标准清除流程清 PLC ID 区
+    }
+
+    /// <summary>标准清除流程（命令2）：清零 401~672 → 写命令码2 → 400 触发 → 回显；失败重试后仍失败 = WARN+审计，不置 9001</summary>
+    private void StartPlcClearTask(int plcIndex, int station)
+    {
+        var poller = FindPoller(plcIndex);
+        if (poller == null || !poller.IsConnected)
+        {
+            Log("PLC", $"取走清理跳过（PLC{plcIndex} 未连接）: 站口{station}", LogLevel.Warn);
+            return;
+        }
+        _ = Task.Run(() =>
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            try
+            {
+                bool ok = poller.Channel.Execute(station, RegisterMap.CmdClear, null);
+                sw.Stop();
+                if (ok)
+                    Log("PLC", $"取走清理: PLC{plcIndex} 站口{station} ID 区已清除（{sw.ElapsedMilliseconds}ms）", LogLevel.Info);
+                else
+                {
+                    Log("PLC", $"取走清理失败: PLC{plcIndex} 站口{station}（重试后仍失败；PLC 侧残留旧 ID 会被下次写入覆盖）", LogLevel.Warn);
+                    Audit("CMD", $"取走清理失败: PLC{plcIndex} 站口{station}");
+                }
+            }
+            catch (Exception e) { LogException("PLC", $"取走清理异常: PLC{plcIndex} 站口{station}", e, LogLevel.Warn); }
+        });
     }
 
     // ---------- RPT 组装 ----------
@@ -611,8 +709,8 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
                             }
                             _inv.SetCarrier(row.PlcIndex, st, row.CmdCarrierId, locNorm, row.CmdSource == "SCAN" ? "MANUAL" : row.CmdSource);
                             _inv.CompleteCommand(row.PlcIndex, st, poller.Channel.LastSeq);
-                            SendEvent(201, 2, SecsEncode.L(SecsEncode.A(row.CmdCarrierId), SecsEncode.A(locNorm)),
-                                $"PLC{row.PlcIndex} 站口{st} {row.CmdCarrierId}");
+                            // 统一上报出口（载具确认机制）：有 pending（204/201 等 ID）→ 报 pending 事件；无 → 命令路径报 201
+                            ReportCarrierReady(row.PlcIndex, st, row.CmdCarrierId, 201);
                             PushStationStatus(row.PlcIndex, st, row.CmdCarrierId);
                         }
                         else
@@ -790,13 +888,13 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
             ?? _inv.Carriers.FirstOrDefault(c => c.CarrierLoc == _engine.Loc(plcIndex, station))?.CarrierId
             ?? FindPoller(plcIndex)?.Snapshot?.CarrierId[station - 1] ?? "";
 
-    /// <summary>手动触发 queryMachines（AGVC 联调页）：与自动路径一致——查询 ID → 写 PLC + 台账 + 201</summary>
-    public async Task<(bool Ok, string Message)> ManualQueryMachines(string cmsIndex)
+    /// <summary>手动触发 queryMachines（AGVC 联调页）：与自动路径一致——查询 ID → 写 PLC + 台账 + 201；reqCode 缺省自动生成（Q6，现场要求）</summary>
+    public async Task<(bool Ok, string Message)> ManualQueryMachines(string cmsIndex, string? reqCode = null)
     {
         if (_agvc == null) return (false, "agvc.baseUrl 未配置，出站禁用");
         if (!TryParseCmsIndex(cmsIndex, out int plc, out int st)) return (false, $"cmsIndex 无效: {cmsIndex}");
         if (FindPoller(plc) == null) return (false, $"PLC{plc} 未配置");
-        var carrierId = await _agvc.QueryCarrierIdAsync(plc, st, _cts.Token);
+        var carrierId = await _agvc.QueryCarrierIdAsync(plc, st, _cts.Token, reqCode);
         if (string.IsNullOrWhiteSpace(carrierId)) return (false, $"查询无结果（{cmsIndex}）——详见下方发送记录");
         bool ok = ManualInstall(carrierId, cmsIndex, "AGVC");
         return ok ? (true, $"已获取货物 ID \"{carrierId}\" 并写入 PLC") : (false, $"货物 ID \"{carrierId}\" 写 PLC 失败");
@@ -873,7 +971,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
                 p.Config.ByteOrder), stations, DeviceNameOf(p.Config.Index), p.Config.Stations));
         }
         bool connected = _hsms?.Connected == true;
-        return new StatusView(connected ? 5 : 1, 3, connected, plcs, Alarms.ToList(),
+        return new StatusView(connected ? 5 : 1, 3, connected, plcs, AllAlarms.ToList(),   // 状态栏含内部 9001
             _hsms?.GetStats() ?? new Secs.HsmsServer.McsStats(false, null, "", 0, 0, 0, 0, "", ""),
             GetSystemInfo());
     }
@@ -890,7 +988,8 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
     public sealed record StationLedgerRow(int PlcIndex, int Station, string DeviceNo, string UnitId,
         int StationState, string StateLabel, int Avail, string UnitStateLabel,
         int AlarmCode, string CarrierId, string InstallSource, string UpdatedAt,
-        int CmdState, string CmdStateLabel, int CmdType, string CmdCarrierId, string CmdTime, uint CmdSeq, string CmdSource);
+        int CmdState, string CmdStateLabel, int CmdType, string CmdCarrierId, string CmdTime, uint CmdSeq, string CmdSource,
+        int PendingCeid, string PendingAt, string PendingLabel);
 
     private static string StateLabelOf(ushort s) => s switch
     {
@@ -920,7 +1019,9 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
             r.Avail, r.Avail == 0 ? "在服" : "停服",
             r.AlarmCode, r.CarrierId, r.InstallSource, r.UpdatedAt,
             r.CmdState, CmdStateLabelOf(r.CmdState),
-            r.CmdType, r.CmdCarrierId, r.CmdTime, r.CmdSeq, r.CmdSource)).ToList();
+            r.CmdType, r.CmdCarrierId, r.CmdTime, r.CmdSeq, r.CmdSource,
+            r.PendingCeid, r.PendingAt,
+            r.PendingCeid != 0 ? $"等待货物ID({r.PendingCeid})" : "—")).ToList();
 
     // ---------- S2F41 主机命令 ----------
     private void HandleHostCommand(string rcmd, Dictionary<string, string> pars, List<SecsItem> entries)
@@ -1001,6 +1102,10 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
             if (c != null && TryParseLoc(c.CarrierLoc, out int oldPlc, out int oldSt))
                 _inv.RemoveCarrier(oldPlc, oldSt, out _);
             _inv.SetCarrier(plc, st, id, locNorm, "MCS");
+            // 载具确认机制：仅当该站有 pending（等 ID 的载具事件）才触发统一上报出口——纯对账不产生事件
+            var pend = _inv.Ledger.FirstOrDefault(r => r.PlcIndex == plc && r.Station == st);
+            if (pend != null && pend.PendingCeid != 0)
+                ReportCarrierReady(plc, st, id, 201);
             Audit("对账", $"台账更新: {id} @ {locNorm}" + (c != null ? $"（原位置: {c.CarrierLoc}）" : "（新增）"));
             updated++;
         }

@@ -13,7 +13,7 @@ async function loadStatus() {
     if (typeof screenMode !== 'undefined' && screenMode) renderScreenDash(s);
     if (curPage === 'overview') renderOverview(s);
     if (curPage === 'plcdetail') renderDetail(s);
-    if (curPage === 'plctest') renderPlctEcho();
+    if (curPage === 'plctest') { renderPlctEcho(); renderPlctReg(); }
     if (curPage === 'mcstest') { mcsBuild(); mcsRefresh(s); }
   } catch (e) {
     document.getElementById('statusbar').innerHTML = `<span class="badge b-err">加载失败: ${esc(e)}</span>`;
@@ -81,6 +81,8 @@ function renderOverview(s) {
 const STATE_ICON = { 0: '◌', 1: '●', 2: '↓', 3: '↑', 4: '·', 5: '✋' };
 
 // ---------- PLC 详情：单台 16 站口 + 完整寄存器视图（原地更新防缩回） ----------
+let detBuiltPlc = null;   // Q5：建表对应的 PLC index
+
 function fillPlcSelects(plcs) {
   // PLC 详情页选择器（下拉）；调试面板为手填输入（dbgPlcNum 解析）
   const sel = document.getElementById('detPlc');
@@ -88,6 +90,14 @@ function fillPlcSelects(plcs) {
   sel.innerHTML = plcs.map(p =>
     `<option value="${p.index}" ${String(p.index) === cur ? 'selected' : ''}>${p.name || p.index + ' 号 Buffer'}（${p.connected ? '在线' : '离线'}）</option>`).join('');
   if (!sel.value && plcs.length) sel.value = plcs[0].index;
+  // 单机测试页寄存器视图的独立 PLC 下拉（Q5：与命令表单互不影响；1.5s 重填保留选中项）
+  const regSel = document.getElementById('plctRegPlc');
+  if (regSel) {
+    const cur2 = regSel.value;
+    regSel.innerHTML = plcs.map(p =>
+      `<option value="${p.index}" ${String(p.index) === cur2 ? 'selected' : ''}>${p.name || p.index + ' 号 Buffer'}（${p.connected ? '在线' : '离线'}）</option>`).join('');
+    if (!cur2 && plcs.length) regSel.value = plcs[0].index;
+  }
 }
 
 function detPlcChanged() { detBuilt = false; loadStatus(); }
@@ -127,12 +137,13 @@ function buildDetail(p) {
   buildRegTable(document.getElementById('tbl-reg-id'), { cols: ['站口', '地址', '载具ID（快照）', 'HEX（原始值）'], rows: idRows });
 
   detBuilt = true;
+  detBuiltPlc = p.index;   // Q5：记录建表对应的 PLC（8/16 站行数不同，换 PLC 才重建表）
 }
 
 function renderDetail(s) {
   const p = getDetPlc(s);
   if (!p) { document.getElementById('detStat').textContent = '（无 PLC 配置）'; return; }
-  if (!detBuilt) buildDetail(p);
+  if (!detBuilt || detBuiltPlc !== p.index) buildDetail(p);
 
   // 统计行
   const st = p.stats;
@@ -144,8 +155,14 @@ function renderDetail(s) {
   for (const x of p.stations) {
     const cell = document.getElementById('det-cell-' + x.station);
     if (!cell) continue;
-    cell.className = 'cell st' + (x.state >= 5 ? 99 : x.state);
+    // 载具确认机制（2026-08-19）：中间态站口（有货无 ID、pending 等待中）黄色闪烁 + 点击补填
+    const pend = (typeof pendingRows !== 'undefined' ? pendingRows : []).find(r => r.plcIndex === p.index && r.station === x.station);
+    const isPend = !!(pend && (x.state === 1 || x.state === 5));
+    cell.className = 'cell st' + (x.state >= 5 ? 99 : x.state) + (isPend ? ' blink' : '');
+    cell.dataset.action = isPend ? 'fill-open' : '';
+    cell.dataset.arg = isPend ? `${p.index}:${x.station}` : '';
     cell.innerHTML = `站${x.station} · ${STATE_ICON[x.state] || '·'}${ST[x.state] || ('状态' + x.state)}<br>${esc(x.carrierId) || '—'}${x.truncated ? ' <span class="chip-trunc">截断</span>' : ''}` +
+      (isPend ? ` <span class="chip-pending">等待ID(${pend.pendingCeid})</span>` : '') +
       (x.alarm ? ` <span class="chip-alarm">A${x.alarm}</span>` : '') +
       (x.avail ? '<span class="offline-mark">下线</span>' : '');
   }
@@ -202,10 +219,11 @@ async function readRegBlocks(plc, addr, total) {
   return vals;
 }
 
-// 目标 PLC：优先取单机测试页的 PLC 输入（寄存器视图已迁至该页），否则退回设备详情页选择
+// 目标 PLC：优先取寄存器视图独立下拉（Q5），否则退回设备详情页选择
 function regTargetPlc() {
-  const n = typeof plctNum === 'function' ? plctNum() : NaN;
-  return !isNaN(n) ? n : detPlc;
+  const regSel = document.getElementById('plctRegPlc');
+  if (regSel && regSel.value) return +regSel.value;
+  return detPlc;
 }
 
 async function readIdRaw() {

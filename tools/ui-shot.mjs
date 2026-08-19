@@ -14,8 +14,7 @@ const PORT = 9222;
 
 const PAGES = [
   ['overview', '总览'],
-  ['plcdetail', 'PLC 详情'],
-  ['cmds', '命令'],
+  ['plcdetail', '设备详情'],
   ['plctest', 'PLC 单机测试'],
   ['events', '事件/告警'],
   ['logs', '日志'],
@@ -24,21 +23,22 @@ const PAGES = [
 ];
 // 每页渲染健康探测（截图后执行，输出到 stdout）
 const PROBES = {
-  overview: '({rows:document.querySelectorAll("#tbl-overview tbody tr").length, on:document.querySelectorAll("#tbl-overview .b-ok").length})',
-  plcdetail: '({cells:document.querySelectorAll("#detGrid .cell").length, regs:document.querySelectorAll("#tbl-reg-status tr").length, ids:document.querySelectorAll("#tbl-reg-id tr").length})',
-  cmds: '({loc:!!document.getElementById("loc"), overlay:getComputedStyle(document.getElementById("confirmBox")).display})',
-  plctest: '({echoRows:document.querySelectorAll("#tbl-plct-echo tr").length, steps:document.querySelectorAll(".step-no").length})',
+  overview: '({rows:document.querySelectorAll("#tbl-overview tbody tr").length, on:document.querySelectorAll("#tbl-overview .b-ok").length, inv:document.querySelectorAll("#tbl-inv-body tr").length})',
+  plcdetail: '({cells:document.querySelectorAll("#detGrid .cell").length})',
+  plctest: '({echoRows:document.querySelectorAll("#tbl-plct-echo tr").length, steps:document.querySelectorAll(".step-no").length, regs:document.querySelectorAll("#tbl-reg-status tr").length, ids:document.querySelectorAll("#tbl-reg-id tr").length})',
   events: '({ev:document.querySelectorAll("#tbl-events tr").length, cmds:document.querySelectorAll("#tbl-cmds tr").length, alarms:document.querySelectorAll("#tbl-alarms tr").length})',
   logs: '({lines:document.querySelectorAll("#logs > div").length, filterBtns:document.querySelectorAll("#logFilter button").length})',
   agvctest: '({entries:document.querySelectorAll("#tbl-agvc .agvc-entry").length, stats:document.getElementById("agvStats")?.textContent?.slice(0,50)})',
-  mcstest: '({inv:document.querySelectorAll("#tbl-inv tr").length, fast:document.querySelectorAll("#tbl-mcs-fast tr").length, id:document.querySelectorAll("#tbl-mcs-id tr").length, hsms:document.querySelectorAll("#mcsTrafficList .agvc-entry").length, ev:document.querySelectorAll("#tbl-mcsevents tr").length})',
+  mcstest: '({fast:document.querySelectorAll("#tbl-mcs-fast tr").length, id:document.querySelectorAll("#tbl-mcs-id tr").length, hsms:document.querySelectorAll("#mcsTrafficList .agvc-entry").length, ev:document.querySelectorAll("#tbl-mcsevents tr").length})',
 };
 
 const outDir = process.argv[2];
 const baseUrl = (process.argv[3] || 'http://localhost:7001').replace(/\/$/, '');
 const want = process.argv[4] ? process.argv[4].split(',') : PAGES.map(p => p[0]);
 const theme = process.argv[5] || null;   // light | dark：截屏前写入 localStorage 并刷新
-if (!outDir) { console.error('用法: node tools/ui-shot.mjs <输出目录> [baseUrl] [页面名,...] [主题]'); process.exit(2); }
+const viewport = process.argv[6] || null;   // 宽x高，如 1920x1080
+if (!outDir) { console.error('用法: node tools/ui-shot.mjs <输出目录> [baseUrl] [页面名,...] [主题] [视口]'); process.exit(2); }
+if (viewport) { const [vw, vh] = viewport.split('x').map(Number); console.log('视口: ' + vw + 'x' + vh); }
 
 mkdirSync(outDir, { recursive: true });
 const userData = path.join(os.tmpdir(), `bc-ui-shot-${process.pid}`);
@@ -121,7 +121,8 @@ try {
   await send('Runtime.enable');
   await send('Log.enable');
   await send('Page.enable');
-  await send('Emulation.setDeviceMetricsOverride', { width: 1600, height: 900, deviceScaleFactor: 1, mobile: false });
+  const [vw, vh] = viewport ? viewport.split('x').map(Number) : [1600, 900];
+  await send('Emulation.setDeviceMetricsOverride', { width: vw, height: vh, deviceScaleFactor: 1, mobile: false });
 
   const loaded = waitEvent('Page.loadEventFired', 15000).catch(() => console.error('[cdp] 未等到 loadEventFired，继续'));
   await send('Page.navigate', { url: baseUrl + '/' });

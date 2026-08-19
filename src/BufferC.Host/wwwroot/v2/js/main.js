@@ -187,6 +187,16 @@ const ACTIONS = {
     const b = document.querySelector('#page-events .tabbar [data-action="switch-tab"][data-arg="alarms"]');
     if (b) switchTab('alarms', b);
   },
+  'goto-pending': () => {
+    openPage('events');
+    const b = document.querySelector('#page-events .tabbar [data-action="switch-tab"][data-arg="pending"]');
+    if (b) switchTab('pending', b);
+  },
+  // 载具事件补填（2026-08-19）：详情页站口弹窗 / 待补 tab 行内按钮 / 弹窗提交与关闭
+  'fill-open': arg => { const [p, s] = arg.split(':').map(Number); openFill(p, s); },
+  'fill-row': (arg, el) => fillRow(+el.dataset.plc, +el.dataset.station),
+  'fill-submit': () => submitFill(),
+  'fill-close': () => { document.getElementById('fillBox').style.display = 'none'; },
   'enter-screen': () => enterScreen(),
   'exit-screen': () => exitScreen(),
 };
@@ -210,6 +220,7 @@ document.addEventListener('change', e => {
   if (el) {
     const act = el.dataset.action;
     if (act === 'mcs-write-cell') mcsWriteCell(el);
+    else if (act === 'plct-reg-plc-changed') { detBuilt = false; loadStatus(); }   // Q5：寄存器视图独立下拉切换 → 重建表
     else if (act === 'mcs-write-id') mcsWriteId(el);
     else if (act === 'mcs-write-scan') mcsWriteScan(el);
     else if (ACTIONS[act]) ACTIONS[act](el.dataset.arg, el);
@@ -233,6 +244,8 @@ document.addEventListener('keydown', e => {
     else if (which === 'plct-seq') plctTrigger();
     else if (which === 'agv-q') agvManualQuery();
     else if (which === 'agv-p') agvManualPush();
+    else if (which === 'fill-row') fillRow(+el.dataset.plc, +el.dataset.station);
+    else if (which === 'fill-submit') submitFill();
   }
   // 左右方向键在已开页签间切换（输入框内不拦截）
   if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) {
@@ -261,8 +274,10 @@ document.addEventListener('keydown', e => {
 let pollTimers = [];
 function startPolling() {
   loadStatus();
+  loadPending();
   pollTimers = [
     setInterval(loadStatus, 1500),
+    setInterval(loadPending, 3000),   // 待补提示条/角标/tab（全局常开）
     setInterval(() => { if (curPage === 'events') loadActivity(); }, 3000),
     setInterval(() => { if (curPage === 'logs') loadLogs(); }, 2000),
     setInterval(() => { if (curPage === 'flowlog') loadAuditLogs(); }, 2000),

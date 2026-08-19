@@ -6,13 +6,16 @@
 <title>BufferC 缓冲库监控界面</title>
 <script>try{var t=localStorage.getItem('bc-theme');if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}</script>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%232a78d6'/%3E%3Ctext x='8' y='12' font-size='10' text-anchor='middle' fill='white'%3EB%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="css/app.css?v=20260817f">
-<link rel="stylesheet" href="css/screen.css?v=20260817f">
+<link rel="stylesheet" href="css/app.css?v=20260819b">
+<link rel="stylesheet" href="css/screen.css?v=20260819b">
 </head>
 <body>
 
 <!-- 未确认告警条（>0 时显示，点击跳当前告警 tab） -->
 <div id="alarmStrip" class="alarm-strip" data-action="goto-alarms" hidden></div>
+
+<!-- 载具事件待补条（>0 时显示，点击跳「待补数据」tab） -->
+<div id="pendingStrip" class="pending-strip" data-action="goto-pending" hidden></div>
 
 <!-- 大屏看板（data-screen=1 时显示，替代常规布局） -->
 <div id="screen-dash" hidden>
@@ -57,11 +60,11 @@
   <div class="card">
     <h2>台账（站口合并）
       <button data-action="invRefresh">刷新</button>
-      <span class="stat-line">每站一行（表为中心）：安装/取走/对账实时变化，取走后保留载具ID与来源；打开本页自动拉取，点击刷新手动拉取</span>
+      <span class="stat-line">每站一行（表为中心）：安装/取走/对账实时变化，取走后清空载具ID（防旧 ID 污染下次判断）；等 ID 的载具事件见「事件待上报」列；打开本页自动拉取，点击刷新手动拉取</span>
     </h2>
     <div class="tbl-scroll" id="invWrap">
       <table class="reg-table" id="tbl-inv">
-        <thead><tr><th>设备号</th><th>位置号</th><th>单位状态</th><th>站口状态</th><th>载具ID</th><th>来源</th><th>报警码</th><th>数据更新时间</th><th>命令状态</th><th>命令类型</th><th>命令载具</th><th>命令时间</th><th>命令编号</th><th>命令来源</th></tr></thead>
+        <thead><tr><th>设备号</th><th>位置号</th><th>单位状态</th><th>站口状态</th><th>载具ID</th><th>来源</th><th>事件待上报</th><th>报警码</th><th>数据更新时间</th><th>命令状态</th><th>命令类型</th><th>命令载具</th><th>命令时间</th><th>命令编号</th><th>命令来源</th></tr></thead>
         <tbody id="tbl-inv-body"></tbody>
       </table>
     </div>
@@ -87,11 +90,16 @@
       <button role="tab" aria-selected="false" data-action="switch-tab" data-arg="cmds">命令</button>
       <button role="tab" aria-selected="false" data-action="switch-tab" data-arg="alarmhist">告警历史</button>
       <button role="tab" aria-selected="false" data-action="switch-tab" data-arg="alarms">当前告警<span class="tab-badge" id="alarmTabBadge" hidden></span></button>
+      <button role="tab" aria-selected="false" data-action="switch-tab" data-arg="pending">待补数据<span class="tab-badge" id="pendingTabBadge" hidden></span></button>
     </div>
     <div id="tab-events" class="tabpanel active" role="tabpanel"><table class="list" id="tbl-events"></table></div>
     <div id="tab-cmds" class="tabpanel" role="tabpanel"><table class="list" id="tbl-cmds"></table></div>
     <div id="tab-alarmhist" class="tabpanel" role="tabpanel"><table class="list" id="tbl-alarmhist"></table></div>
     <div id="tab-alarms" class="tabpanel" role="tabpanel"><table class="list" id="tbl-alarms"></table></div>
+    <div id="tab-pending" class="tabpanel" role="tabpanel">
+      <table class="list" id="tbl-pending"></table>
+      <div id="pendingMsg" class="stat-line"></div>
+    </div>
   </div>
 </div>
 
@@ -168,7 +176,10 @@
     <div class="logs logs-lg h-280" id="plctLog"></div>
   </div>
   <div class="card">
-    <h2>寄存器视图（字节序 <span id="detByteOrder">—</span>）</h2>
+    <h2>寄存器视图（字节序 <span id="detByteOrder">—</span>）
+      <select id="plctRegPlc" data-action="plct-reg-plc-changed"></select>
+      <span class="stat-line">独立选择要读的 PLC（与命令表单互不影响）</span>
+    </h2>
     <div class="reg-cols">
       <div class="reg-col">
         <h3>状态区 0~49 <span class="stat-line">（自动刷新）</span></h3>
@@ -199,6 +210,7 @@
     <div class="step">
       <b>queryMachines（查询货物 ID）</b>
       cmsIndex <input id="agvqCms" placeholder="如 10001" size="8" data-enter="agv-q">
+      reqCode <input id="agvqReq" placeholder="留空=自动生成" size="22" data-enter="agv-q">
       <button data-action="agvManualQuery">发送</button>
       <span class="stat-line" id="agvqResult">—</span>
     </div>
@@ -288,15 +300,32 @@
   </div>
 </div>
 
-<script src="js/util.js?v=20260817f"></script>
-<script src="js/protocol.js?v=20260817f"></script>
-<script src="js/regtable.js?v=20260817f"></script>
-<script src="js/logs.js?v=20260817f"></script>
-<script src="js/events.js?v=20260817f"></script>
-<script src="js/status.js?v=20260817f"></script>
-<script src="js/plctest.js?v=20260817f"></script>
-<script src="js/agvctest.js?v=20260817f"></script>
-<script src="js/mcstest.js?v=20260817f"></script>
-<script src="js/main.js?v=20260817f"></script>
+<!-- 载具事件补填弹窗（点击中间态站口弹出；常驻可反复提交） -->
+<div class="overlay" id="fillBox">
+  <div class="box">
+    <h3>补填载具 ID</h3>
+    <div id="fillInfo" class="stat-line"></div>
+    <div class="step">
+      载具 ID <input id="fillCarrierId" size="16" placeholder="如 AGV001" data-enter="fill-submit">
+      <button data-action="fill-submit">补填并写 PLC</button>
+    </div>
+    <div id="fillResult" class="stat-line"></div>
+    <div style="text-align:center;margin-top:12px">
+      <button data-action="fill-close">关闭</button>
+    </div>
+  </div>
+</div>
+
+<script src="js/util.js?v=20260819b"></script>
+<script src="js/protocol.js?v=20260819b"></script>
+<script src="js/regtable.js?v=20260819b"></script>
+<script src="js/logs.js?v=20260819b"></script>
+<script src="js/events.js?v=20260819b"></script>
+<script src="js/pending.js?v=20260819b"></script>
+<script src="js/status.js?v=20260819b"></script>
+<script src="js/plctest.js?v=20260819b"></script>
+<script src="js/agvctest.js?v=20260819b"></script>
+<script src="js/mcstest.js?v=20260819b"></script>
+<script src="js/main.js?v=20260819b"></script>
 </body>
 </html>

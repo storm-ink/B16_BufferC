@@ -42,11 +42,12 @@ public sealed class AgvcClient : IDisposable
     /// 查询指定 cmsIndex 站口的货物 ID：code=="0" 且 data[0].carrierId 非空 → 返回 ID；
     /// 无结果/中断/传输失败按 RetryCount 重试（间隔 RetryIntervalMs），仅日志；
     /// 最终失败返回 null（该站口保持无 ID，现场人工在 Web 补）。
+    /// reqCode 缺省自动生成（时间戳+随机 ≤32 每次唯一——现场要求 2026-08-17，Q6）。
     /// </summary>
-    public async Task<string?> QueryCarrierIdAsync(int plc, int station, CancellationToken ct)
+    public async Task<string?> QueryCarrierIdAsync(int plc, int station, CancellationToken ct, string? reqCode = null)
     {
         string cmsIndex = (plc * _cfg.CmsIndexBase + station).ToString();
-        var payload = JsonSerializer.Serialize(new { cmsIndex }, Camel);
+        var payload = JsonSerializer.Serialize(new { cmsIndex, reqCode = reqCode ?? NewReqCode() }, Camel);
 
         int attempts = 1 + _cfg.RetryCount;
         string lastResp = "";
@@ -94,7 +95,7 @@ public sealed class AgvcClient : IDisposable
         // 现场确认：去掉 inputRequest/outputRequest 两个字段（不再发送）；reqCode 每次请求随机值、长度≤32（时间戳+随机数，现场要求 2026-08-17）
         var body = new
         {
-            reqCode = $"{DateTime.Now:yyyyMMddHHmmssfff}{Random.Shared.Next(1000, 9999)}",
+            reqCode = NewReqCode(),
             status = new object[]
             {
                 new
@@ -142,6 +143,9 @@ public sealed class AgvcClient : IDisposable
         _onTraffic?.Invoke("pushDeviceStatusInfo", cmsIndex, payload, lastResp, false);
         return false;
     }
+
+    /// <summary>请求唯一码（时间戳 17 位 + 随机 4 位 = 21 字符 ≤32，每次请求唯一——现场要求 2026-08-17）</summary>
+    private static string NewReqCode() => $"{DateTime.Now:yyyyMMddHHmmssfff}{Random.Shared.Next(1000, 9999)}";
 
     public void Dispose() => _http.Dispose();
 }

@@ -222,6 +222,15 @@ table.list th { background: var(--th-bg); }
 .tab-badge { background: var(--status-crit); color: var(--on-crit); border-radius: 8px; padding: 0 6px; margin-left: 6px; font-size: 11px; }
 .tab-badge[hidden] { display: none; }
 .empty-row { color: var(--ink-3); text-align: center; }
+
+/* ---- 载具事件待补（2026-08-19 载具确认机制） ---- */
+.pending-strip { background: var(--status-warn); color: var(--on-warn); padding: 6px 12px; cursor: pointer; }
+.pending-strip[hidden] { display: none; }
+.chip-pending { background: var(--status-warn); color: var(--on-warn); border-radius: 3px; padding: 0 4px; font-size: 10px; }
+.row-pending td { background: var(--hl-target); }
+/* 中间态站口黄色闪烁（状态色保留 + 边框呼吸；闪烁不是唯一表意——另有 chip「等待ID」+ 提示条） */
+@keyframes pending-blink { 0%, 100% { box-shadow: inset 0 0 0 2px var(--status-warn); } 50% { box-shadow: inset 0 0 0 2px transparent; } }
+.cell.blink { cursor: pointer; animation: pending-blink 1.2s ease-in-out infinite; }
 table.list tbody tr:hover td, table.list tr:hover td { background: var(--surface-2); }
 .reg-table tr:hover td { background: var(--surface-2); }
 .err-chip { background: var(--status-crit); color: var(--on-crit); padding: 3px 10px; font-size: 12px; margin-bottom: 4px; border-radius: var(--radius-sm); }

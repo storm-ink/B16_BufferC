@@ -6,8 +6,8 @@ export default async ({ ev, wait }) => {
   await wait(1800);
 
   out.push({
-    label: '默认状态：侧栏 8 项、页签仅总览、激活总览',
-    ok: await ev(`document.querySelectorAll('.side-item').length === 8 && document.querySelectorAll('.tab-wrap').length === 1 && curPage === 'overview'`),
+    label: '默认状态：侧栏 7 项（命令页已移除）、页签仅总览、激活总览',
+    ok: await ev(`document.querySelectorAll('.side-item').length === 7 && document.querySelectorAll('.tab-wrap').length === 1 && curPage === 'overview'`),
     got: await ev(`({ side: document.querySelectorAll('.side-item').length, tabs: openTabs.join(','), cur: curPage })`),
   });
 
@@ -27,8 +27,8 @@ export default async ({ ev, wait }) => {
 
   await ev(`togglePageSetting('agvctest', false); togglePageSetting('mcstest', false); true`);
   out.push({
-    label: '关闭 AGVC/MCS 开关 → 侧栏 6 项、已开页签保留',
-    ok: await ev(`document.querySelectorAll('.side-item').length === 6 && openTabs.length === 2 && ![...document.querySelectorAll('.side-item')].some(b => ['AGVC 联调','MCS 联调'].includes(b.textContent))`),
+    label: '关闭 AGVC/MCS 开关 → 侧栏 5 项、已开页签保留',
+    ok: await ev(`document.querySelectorAll('.side-item').length === 5 && openTabs.length === 2 && ![...document.querySelectorAll('.side-item')].some(b => ['AGVC 联调','MCS 联调'].includes(b.textContent))`),
     got: await ev(`({ side: document.querySelectorAll('.side-item').length, tabs: openTabs.join(',') })`),
   });
 
@@ -40,8 +40,8 @@ export default async ({ ev, wait }) => {
   await ev(`location.reload(); true`);
   await wait(1800);
   out.push({
-    label: '刷新后：侧栏仍 6 项、页签集恢复（总览+PLC详情）、激活总览',
-    ok: await ev(`document.querySelectorAll('.side-item').length === 6 && openTabs.join(',') === 'overview,plcdetail' && curPage === 'overview'`),
+    label: '刷新后：侧栏仍 5 项、页签集恢复（总览+PLC详情）、激活总览',
+    ok: await ev(`document.querySelectorAll('.side-item').length === 5 && openTabs.join(',') === 'overview,plcdetail' && curPage === 'overview'`),
     got: await ev(`({ side: document.querySelectorAll('.side-item').length, tabs: openTabs.join(','), cur: curPage })`),
   });
 

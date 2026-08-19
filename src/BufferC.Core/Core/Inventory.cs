@@ -14,12 +14,15 @@ namespace BufferC.Core.Core;
 /// </summary>
 public sealed class Inventory : IDisposable
 {
-    /// <summary>站口主表行。state=0~5 站口状态（0空/1有货/2正放/3正取/4故障/5人工有货）；取走保留 carrier_id/source</summary>
+    /// <summary>站口主表行。state=0~5 站口状态（0空/1有货/2正放/3正取/4故障/5人工有货）；
+    /// 载具确认机制（2026-08-19）：CarrierConfirmed=完整流程有货（0/1），PendingCeid=等待中的事件（0/201/204），
+    /// PendingAt=中间态登记时间，PendingId=等待 ID（空=数据没来；就绪后留痕）；取走后清 carrier_id/source。</summary>
     public sealed record StationRow(
         int PlcIndex, int Station, string UnitId,
         ushort State, string CarrierId, string InstallSource, string UpdatedAt,
         ushort Avail, ushort AlarmCode,
-        ushort CmdState, ushort CmdType, string CmdCarrierId, string CmdTime, uint CmdSeq, string CmdSource);
+        ushort CmdState, ushort CmdType, string CmdCarrierId, string CmdTime, uint CmdSeq, string CmdSource,
+        int CarrierConfirmed, int PendingCeid, string PendingAt, string PendingId);
 
     private readonly string? _dbPath;
     private readonly Dictionary<string, StationRow> _stations = new();   // "plc:station" → 行
@@ -63,10 +66,10 @@ public sealed class Inventory : IDisposable
                 {
                     var key = Key(p, s);
                     if (_stations.ContainsKey(key)) continue;
-                    var row = new StationRow(p, s, _unitNamer(p, s), 0, "", "", "", 0, 0, 0, 0, "", "", 0, "");
+                    var row = new StationRow(p, s, _unitNamer(p, s), 0, "", "", "", 0, 0, 0, 0, "", "", 0, "", 0, 0, "", "");
                     _stations[key] = row;
-                    Exec("INSERT OR REPLACE INTO stations(station_key, plc, station, unit_id, state, carrier_id, install_source, avail, alarm_code, updated_at, cmd_state, cmd_type, cmd_carrier_id, cmd_time, cmd_seq, cmd_source) " +
-                         "VALUES($k,$p,$s,$u,0,'','',0,0,'',0,0,'','',0,'')",
+                    Exec("INSERT OR REPLACE INTO stations(station_key, plc, station, unit_id, state, carrier_id, install_source, avail, alarm_code, updated_at, cmd_state, cmd_type, cmd_carrier_id, cmd_time, cmd_seq, cmd_source, carrier_confirmed, pending_ceid, pending_at, pending_id) " +
+                         "VALUES($k,$p,$s,$u,0,'','',0,0,'',0,0,'','',0,'',0,0,'','')",
                          ("$k", key), ("$p", p), ("$s", s), ("$u", row.UnitId));
                 }
             }
@@ -113,7 +116,8 @@ public sealed class Inventory : IDisposable
     public IReadOnlyList<AlarmStatus> Alarms { get { lock (_lock) return _alarms.ToList(); } }
 
     // ---------- 载具操作 ----------
-    /// <summary>安装载具（命令/扫码/对账路径）：state=1、写来源、刷更新时间；同站旧载具索引移除</summary>
+    /// <summary>安装载具（命令/扫码/AGVC/对账路径）：state=1、写来源、CarrierConfirmed=1、刷更新时间；
+    /// pending 列不动（中间态登记与上报确认由服务层处理）</summary>
     public void SetCarrier(int plcIndex, int station, string carrierId, string loc, string source = "MANUAL")
     {
         var key = Key(plcIndex, station);
@@ -121,7 +125,7 @@ public sealed class Inventory : IDisposable
         lock (_lock)
         {
             if (!_stations.TryGetValue(key, out var row))
-                _stations[key] = row = new StationRow(plcIndex, station, _unitNamer(plcIndex, station), 0, "", "", "", 0, 0, 0, 0, "", "", 0, "");
+                _stations[key] = row = new StationRow(plcIndex, station, _unitNamer(plcIndex, station), 0, "", "", "", 0, 0, 0, 0, "", "", 0, "", 0, 0, "", "");
             if (row.CarrierId.Length > 0 && row.CarrierId != carrierId) _byCarrier.Remove(row.CarrierId);
             _stations[key] = row with
             {
@@ -129,19 +133,22 @@ public sealed class Inventory : IDisposable
                 CarrierId = carrierId,
                 InstallSource = source,
                 UpdatedAt = time,
+                CarrierConfirmed = 1,          // ID 就绪 = 完整有货（载具确认机制 2026-08-19）
             };
             if (carrierId.Length > 0) _byCarrier[carrierId] = key;
-            Exec("INSERT OR REPLACE INTO stations(station_key, plc, station, unit_id, state, carrier_id, install_source, avail, alarm_code, updated_at, cmd_state, cmd_type, cmd_carrier_id, cmd_time, cmd_seq, cmd_source) " +
-                 "VALUES($k,$p,$s,$u,$st,$c,$src,$a,$al,$t,$cs,$ct,$cc,$ctime,$cseq,$csrc)",
+            Exec("INSERT OR REPLACE INTO stations(station_key, plc, station, unit_id, state, carrier_id, install_source, avail, alarm_code, updated_at, cmd_state, cmd_type, cmd_carrier_id, cmd_time, cmd_seq, cmd_source, carrier_confirmed, pending_ceid, pending_at, pending_id) " +
+                 "VALUES($k,$p,$s,$u,$st,$c,$src,$a,$al,$t,$cs,$ct,$cc,$ctime,$cseq,$csrc,$cf,$pc,$pa,$pi)",
                  ("$k", key), ("$p", plcIndex), ("$s", station), ("$u", row.UnitId),
                  ("$st", (int)RegisterMap.StHasCarrier), ("$c", carrierId), ("$src", source),
                  ("$a", (int)row.Avail), ("$al", (int)row.AlarmCode), ("$t", time),
                  ("$cs", (int)row.CmdState), ("$ct", (int)row.CmdType), ("$cc", row.CmdCarrierId),
-                 ("$ctime", row.CmdTime), ("$cseq", (long)row.CmdSeq), ("$csrc", row.CmdSource));
+                 ("$ctime", row.CmdTime), ("$cseq", (long)row.CmdSeq), ("$csrc", row.CmdSource),
+                 ("$cf", 1), ("$pc", (int)row.PendingCeid), ("$pa", row.PendingAt), ("$pi", row.PendingId));
         }
     }
 
-    /// <summary>取走载具：state=0、保留 carrier_id/来源（历史）、刷更新时间；空站口返回 false</summary>
+    /// <summary>取走载具：state=0、**清空 carrier_id/来源/确认标志/中间态**（2026-08-19 新口径——
+    /// 防旧 ID 污染下一次等 ID 判断；历史追溯交给审计/历史表）；空站口返回 false</summary>
     public bool RemoveCarrier(int plcIndex, int station, out string carrierId)
     {
         carrierId = "";
@@ -150,13 +157,65 @@ public sealed class Inventory : IDisposable
         lock (_lock)
         {
             if (!_stations.TryGetValue(key, out var row)) return false;
-            if (row.State is not (RegisterMap.StHasCarrier or RegisterMap.StManualCarrier)) return false;
+            // 3=正取也算有货（AGV 取走 5/1→3→0：事件在 3→0 周期触发，此时主表状态已同步为 3）
+            if (row.State is not (RegisterMap.StHasCarrier or RegisterMap.StManualCarrier or RegisterMap.StTaking)) return false;
             carrierId = row.CarrierId;
-            _stations[key] = row with { State = RegisterMap.StEmpty, UpdatedAt = time };
+            _stations[key] = row with
+            {
+                State = RegisterMap.StEmpty,
+                CarrierId = "",
+                InstallSource = "",
+                UpdatedAt = time,
+                CarrierConfirmed = 0,
+                PendingCeid = 0,
+                PendingAt = "",
+                PendingId = "",
+            };
             if (carrierId.Length > 0) _byCarrier.Remove(carrierId);
-            Exec("UPDATE stations SET state=0, updated_at=$t WHERE station_key=$k", ("$t", time), ("$k", key));
+            Exec("UPDATE stations SET state=0, carrier_id='', install_source='', carrier_confirmed=0, pending_ceid=0, pending_at='', pending_id='', updated_at=$t WHERE station_key=$k",
+                 ("$t", time), ("$k", key));
             return true;
         }
+    }
+
+    /// <summary>中间态登记（2026-08-19）：入货流程未完整（有状态无 ID）——等待的事件码 201/204</summary>
+    public void MarkCarrierPending(int plcIndex, int station, int ceid)
+    {
+        var key = Key(plcIndex, station);
+        var time = Now();
+        lock (_lock)
+        {
+            if (!_stations.TryGetValue(key, out var row)) return;
+            _stations[key] = row with
+            {
+                CarrierConfirmed = 0,
+                PendingCeid = ceid,
+                PendingAt = time,
+                PendingId = "",                 // 数据没来 = 空（DB 一眼可见）
+                UpdatedAt = time,
+            };
+            Exec("UPDATE stations SET carrier_confirmed=0, pending_ceid=$pc, pending_at=$pa, pending_id='', updated_at=$t WHERE station_key=$k",
+                 ("$pc", ceid), ("$pa", time), ("$t", time), ("$k", key));
+        }
+    }
+
+    /// <summary>中间态撤销/完成清理（2026-08-19）：pending_ceid/at 清空；pending_id 写入实际 ID 留痕（下次登记时再清）</summary>
+    public void ClearCarrierPending(int plcIndex, int station, string confirmedId)
+    {
+        var key = Key(plcIndex, station);
+        lock (_lock)
+        {
+            if (!_stations.TryGetValue(key, out var row)) return;
+            _stations[key] = row with { PendingCeid = 0, PendingAt = "", PendingId = confirmedId };
+            Exec("UPDATE stations SET pending_ceid=0, pending_at='', pending_id=$pi WHERE station_key=$k",
+                 ("$pi", confirmedId), ("$k", key));
+        }
+    }
+
+    /// <summary>等待中的载具事件行（pending_ceid 非 0）</summary>
+    public IReadOnlyList<StationRow> PendingCarrierRows
+    {
+        get { lock (_lock) return _stations.Values.Where(r => r.PendingCeid != 0).ToList(); }
     }
 
     /// <summary>
@@ -174,22 +233,17 @@ public sealed class Inventory : IDisposable
                 && (row.State is RegisterMap.StHasCarrier or RegisterMap.StManualCarrier)
                 && row.CarrierId.Length > 0)
                 state = row.State;   // 竞态防护：取走交给事件路径
-            var carrierId = row.CarrierId;
-            if (carrierId.Length == 0
-                && (state is RegisterMap.StHasCarrier or RegisterMap.StManualCarrier)
-                && !string.IsNullOrEmpty(snapshotCarrierId))
-                carrierId = snapshotCarrierId;
-            if (row.State == state && row.AlarmCode == alarm && row.Avail == avail && row.CarrierId == carrierId) return;
+            // 载具确认机制（2026-08-19）：ID 只能经 SetCarrier 写入（扫码/AGVC/命令/补填）——快照兜底移除，保来源口径
+            if (row.State == state && row.AlarmCode == alarm && row.Avail == avail) return;
             _stations[key] = row with
             {
                 State = state,
                 AlarmCode = alarm,
                 Avail = avail,
-                CarrierId = carrierId,
                 UpdatedAt = Now(),
             };
-            Exec("UPDATE stations SET state=$st, alarm_code=$al, avail=$a, carrier_id=$c, updated_at=$t WHERE station_key=$k",
-                 ("$st", (int)state), ("$al", (int)alarm), ("$a", (int)avail), ("$c", carrierId), ("$t", _stations[key].UpdatedAt), ("$k", key));
+            Exec("UPDATE stations SET state=$st, alarm_code=$al, avail=$a, updated_at=$t WHERE station_key=$k",
+                 ("$st", (int)state), ("$al", (int)alarm), ("$a", (int)avail), ("$t", _stations[key].UpdatedAt), ("$k", key));
         }
     }
 
@@ -496,7 +550,9 @@ public sealed class Inventory : IDisposable
                             state INTEGER, carrier_id TEXT, install_source TEXT DEFAULT '',
                             avail INTEGER, alarm_code INTEGER, updated_at TEXT DEFAULT '',
                             cmd_state INTEGER DEFAULT 0, cmd_type INTEGER DEFAULT 0, cmd_carrier_id TEXT DEFAULT '',
-                            cmd_time TEXT DEFAULT '', cmd_seq INTEGER DEFAULT 0, cmd_source TEXT DEFAULT '');
+                            cmd_time TEXT DEFAULT '', cmd_seq INTEGER DEFAULT 0, cmd_source TEXT DEFAULT '',
+                            carrier_confirmed INTEGER DEFAULT 0, pending_ceid INTEGER DEFAULT 0,
+                            pending_at TEXT DEFAULT '', pending_id TEXT DEFAULT '');
                         CREATE TABLE IF NOT EXISTS alarms(alarm_id INTEGER PRIMARY KEY, unit_id TEXT, text TEXT);
                         CREATE TABLE IF NOT EXISTS device_state(id INTEGER PRIMARY KEY, control_state INTEGER, sc_state INTEGER);
                         CREATE TABLE IF NOT EXISTS history_events(id INTEGER PRIMARY KEY AUTOINCREMENT, time TEXT, ceid INTEGER, description TEXT);
@@ -506,9 +562,21 @@ public sealed class Inventory : IDisposable
                         """;
                     cmd.ExecuteNonQuery();
                 }
+                // 迁移：旧库补列（载具确认机制 2026-08-19；列已存在则忽略重复列错误）
+                foreach (var col in new[] { "carrier_confirmed", "pending_ceid", "pending_at", "pending_id" })
+                {
+                    try
+                    {
+                        using var mc = conn.CreateCommand();
+                        mc.CommandText = $"ALTER TABLE stations ADD COLUMN {col} TEXT DEFAULT ''";
+                        if (col is "carrier_confirmed" or "pending_ceid") mc.CommandText = $"ALTER TABLE stations ADD COLUMN {col} INTEGER DEFAULT 0";
+                        mc.ExecuteNonQuery();
+                    }
+                    catch (Exception) { /* duplicate column：已存在，跳过 */ }
+                }
                 using (var cmd = conn.CreateCommand())
                 {
-                    cmd.CommandText = "SELECT station_key, plc, station, unit_id, state, carrier_id, install_source, avail, alarm_code, updated_at, cmd_state, cmd_type, cmd_carrier_id, cmd_time, cmd_seq, cmd_source FROM stations";
+                    cmd.CommandText = "SELECT station_key, plc, station, unit_id, state, carrier_id, install_source, avail, alarm_code, updated_at, cmd_state, cmd_type, cmd_carrier_id, cmd_time, cmd_seq, cmd_source, carrier_confirmed, pending_ceid, pending_at, pending_id FROM stations";
                     using var r = cmd.ExecuteReader();
                     while (r.Read())
                     {
@@ -516,7 +584,8 @@ public sealed class Inventory : IDisposable
                         var row = new StationRow(r.GetInt32(1), r.GetInt32(2), r.GetString(3),
                             (ushort)r.GetInt32(4), DStr(r, 5), DStr(r, 6), DStr(r, 9),
                             (ushort)r.GetInt32(7), (ushort)r.GetInt32(8),
-                            (ushort)r.GetInt32(10), (ushort)r.GetInt32(11), DStr(r, 12), DStr(r, 13), (uint)r.GetInt64(14), DStr(r, 15));
+                            (ushort)r.GetInt32(10), (ushort)r.GetInt32(11), DStr(r, 12), DStr(r, 13), (uint)r.GetInt64(14), DStr(r, 15),
+                            r.GetInt32(16), r.GetInt32(17), DStr(r, 18), DStr(r, 19));
                         _stations[key] = row;
                         if ((row.State is RegisterMap.StHasCarrier or RegisterMap.StManualCarrier) && row.CarrierId.Length > 0)
                             _byCarrier[row.CarrierId] = key;

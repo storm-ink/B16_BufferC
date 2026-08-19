@@ -42,20 +42,35 @@ public class InventoryTests
     }
 
     [Fact]
-    public void RemoveCarrier_MarksDeparted_KeepsHistory()
+    public void RemoveCarrier_ClearsIdSourceAndPending()
     {
+        // 取走清 ID（新口径 2026-08-19）：防旧 ID 污染下一次等 ID 判断；历史追溯交给审计/历史表
         var inv = new Inventory(null, 1);
         inv.SetCarrier(1, 3, "CARRIER002", "BUFFER01_03", "MCS");
         Assert.True(inv.RemoveCarrier(1, 3, out var id));
-        Assert.Equal("CARRIER002", id);
+        Assert.Equal("CARRIER002", id);                      // out 参数仍返回旧 ID（上报用）
         Assert.Empty(inv.Carriers);                          // SVID15 不再含
         var row = inv.Ledger.Single(r => r.Station == 3);
         Assert.Equal(RegisterMap.StEmpty, row.State);
-        Assert.Equal("CARRIER002", row.CarrierId);           // 历史保留
-        Assert.Equal("MCS", row.InstallSource);
+        Assert.Equal("", row.CarrierId);
+        Assert.Equal("", row.InstallSource);
+        Assert.Equal(0, row.CarrierConfirmed);
+        Assert.Equal(0, row.PendingCeid);
         Assert.NotEqual("", row.UpdatedAt);
         Assert.False(inv.FindCarrier("CARRIER002", out _, out _));   // 离库不可再 Find
         Assert.False(inv.RemoveCarrier(1, 3, out _));        // 二次移除 false
+    }
+
+    [Fact]
+    public void RemoveCarrier_TakingState_AlsoRemoves()
+    {
+        // AGV 取走经 3（正取）：事件在 3→0 周期触发，此时主表状态已同步为 3——3 也算有货可移除
+        var inv = new Inventory(null, 1);
+        inv.SetCarrier(1, 4, "CARRIER004", "BUFFER01_04", "AGV");
+        inv.UpdateStationState(1, 4, RegisterMap.StTaking, 0, 0, "");
+        Assert.True(inv.RemoveCarrier(1, 4, out var id));
+        Assert.Equal("CARRIER004", id);
+        Assert.Equal(RegisterMap.StEmpty, inv.Ledger.Single(r => r.Station == 4).State);
     }
 
     [Fact]
@@ -76,19 +91,20 @@ public class InventoryTests
     }
 
     [Fact]
-    public void UpdateStationState_ChangeOnly_FillsId_AndRaceGuard()
+    public void UpdateStationState_NoIdBackfill_RaceGuardKeepsCarrier()
     {
         var inv = new Inventory(null, 1);
         // 无变化不写（UpdatedAt 保持空）
         inv.UpdateStationState(1, 1, 0, 0, 0, "");
         Assert.Equal("", inv.Ledger.Single(r => r.Station == 1).UpdatedAt);
-        // 有货 + 表无 ID → 快照兜底填 ID
+        // 载具确认机制（2026-08-19）：ID 只能经 SetCarrier 写入（扫码/AGVC/命令/补填）——快照兜底已移除
         inv.UpdateStationState(1, 1, 1, 0, 0, "SNAP001");
         var row = inv.Ledger.Single(r => r.Station == 1);
-        Assert.Equal("SNAP001", row.CarrierId);
+        Assert.Equal("", row.CarrierId);
         Assert.Equal(RegisterMap.StHasCarrier, row.State);
         Assert.NotEqual("", row.UpdatedAt);
         // 竞态防护：快照读到 0 但表里有载具 → 状态不覆盖（取走交给事件路径）
+        inv.SetCarrier(1, 1, "SNAP001", "BUFFER01_01", "AGV");
         inv.UpdateStationState(1, 1, 0, 0, 0, "");
         Assert.Equal(RegisterMap.StHasCarrier, inv.Ledger.Single(r => r.Station == 1).State);
     }
@@ -147,8 +163,8 @@ public class InventoryTests
             Assert.Equal(16, inv2.Ledger.Count);
             var st2 = inv2.Ledger.Single(r => r.Station == 2);
             Assert.Equal(RegisterMap.StEmpty, st2.State);
-            Assert.Equal("CARRIER001", st2.CarrierId);
-            Assert.Equal("AGV", st2.InstallSource);
+            Assert.Equal("", st2.CarrierId);                 // 取走清 ID（新口径 2026-08-19）
+            Assert.Equal("", st2.InstallSource);
             Assert.NotEqual("", st2.UpdatedAt);
             var st4 = inv2.Ledger.Single(r => r.Station == 4);
             Assert.Equal(RegisterMap.StPutting, st4.State);

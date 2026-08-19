@@ -8,8 +8,10 @@ echo "== 断线重连场景"
 publish_all
 gen_config
 
-echo "== 先起 PLC 仿真（BufferC 连入后注入：t5 放入 → t7.5 断连 → 重连 → t13.5 取出）"
-( printf 'sleep 5000\nput 1 WAFER-101\nstate 1 1\nsleep 2500\ndrop\nsleep 6000\nstate 1 0\nsleep 8000\nq\n' \
+echo "== 先起 PLC 仿真（BufferC 连入后注入：t5 放入+扫码 → t7.5 断连 → 重连 → t13.5 取出）"
+# 载具确认机制（2026-08-19）：204 等 ID 才上报——放货后经扫码握手写入 ID（put 直写 ID 区不再产生事件）；
+# state→scan 间隔 600ms（>轮询 200ms）确保先登记中间态 204 再扫码（否则扫码抑制 204 出口走 201）
+( printf 'sleep 5000\nstate 1 1\nsleep 600\nscan 1 WAFER-101\nsleep 2500\ndrop\nsleep 6000\nstate 1 0\nsleep 8000\nq\n' \
     | "$REPO/publish/simulator/BufferC.Simulator.exe" plc --plc-port $PLC_PORT \
     > "$WORK/plc.log" 2>&1 ) &
 PLC_PID=$!

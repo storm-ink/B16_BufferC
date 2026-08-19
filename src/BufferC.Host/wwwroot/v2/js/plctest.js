@@ -1,4 +1,4 @@
-// plctest.js — PLC 单机测试页（导出: plctNorm, plctNum, plctSt, plctNeedPlc, plctStValid, plctEnter, plctSetCmd, plctAdd, plctFmtVals, plctRegWrite, plctRegRead, plctBo, plctCmdName, plctClear, plctWriteCmd, plctWriteId, plctTrigger, plctAuto, renderPlctEcho）
+// plctest.js — PLC 单机测试页（导出: plctNorm, plctNum, plctSt, plctNeedPlc, plctStValid, plctEnter, plctSetCmd, plctAdd, plctFmtVals, plctRegWrite, plctRegRead, plctBo, plctCmdName, plctClear, plctWriteCmd, plctWriteId, plctTrigger, plctAuto, renderPlctEcho, renderPlctReg）
 // 依赖: main.js 的 lastStatus；protocol.js 的 agtPackAscii/unpackAscii
 
 // ---------- PLC 单机测试页（命令协议测试：全手填 + 回显区 + 富文本下发记录） ----------
@@ -159,6 +159,16 @@ async function plctAuto() {
   await plctTrigger();
 }
 
+// 寄存器视图（独立下拉选 PLC，Q5：与命令表单互不影响；8/16 站换机台才重建表）
+async function renderPlctReg() {
+  const plc = regTargetPlc();
+  const p = plc == null ? null : (lastStatus ? (lastStatus.plcs || []).find(x => x.index === plc) : null);
+  if (!p) return;
+  if (!detBuilt || detBuiltPlc !== p.index) buildDetail(p);
+  document.getElementById('detByteOrder').textContent = p.registers.byteOrder;
+  fillRegTables(p);
+}
+
 // 回显/握手 306~340 自动刷新（lastStatus 每 1.5s 更新；目标站口行高亮、④成功后标绿）
 async function renderPlctEcho() {
   const plc = plctNum();
@@ -167,10 +177,6 @@ async function renderPlctEcho() {
   const p = lastStatus ? (lastStatus.plcs || []).find(x => x.index === plc) : null;
   if (!p) { el.innerHTML = '<tr><td>PLC 未配置或未在线</td></tr>'; return; }
   const r = p.registers;
-  // 寄存器视图已迁至本页：首次确保建表（设备详情页可能从未打开）+ 每轮填值
-  if (!detBuilt) buildDetail(p);
-  document.getElementById('detByteOrder').textContent = r.byteOrder;
-  fillRegTables(p);
   document.getElementById('plctBo').textContent = r.byteOrder === 'low' ? '低字节在前' : '高字节在前';
   const st = plctStValid();
   const rows = [{ cells: [{ t: 'text', v: 306 }, { t: 'text', v: r.echoNo }, { t: 'text', v: '命令编号回显' }] }];

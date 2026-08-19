@@ -70,7 +70,10 @@ public sealed class ScenarioTests : IAsyncLifetime
         _plc.SetCarrierId(3, "CARRIER001");
         _plc.SetStationState(3, 2);                  // AGV 正放
         await Task.Delay(300);
-        _plc.SetStationState(3, 1);                  // 放完
+        _plc.SetStationState(3, 1);                  // 放完 → 中间态等 ID（载具确认机制 2026-08-19）
+        Assert.Null(await _mcs.WaitForEventAsync(204, 500));
+        var (ok, _) = _svc.FillCarrierPending(1, 3, "CARRIER001");   // 补填 → 写 PLC + 上报
+        Assert.True(ok);
         var ev = await _mcs.WaitForEventAsync(204);
         Assert.NotNull(ev);
         var l = ev!.Items()[0].Children!;                     // S6F11 = L3[...]
@@ -152,21 +155,21 @@ public sealed class ScenarioTests : IAsyncLifetime
         _plc.SetCarrierId(4, "CARRIER004");
         _plc.DropConnection();                         // 断线注入
         _plc.SetStationState(4, 1);                    // 断线期间发生变化（重连后仅状态同步，不补报）
-        // 条件等重连 + 基线重建（替代 2500ms 固定等）：重连可观测（ClientCount），基线重建以 S1F3 查询结果收敛为准
+        // 条件等重连 + 状态同步（替代 2500ms 固定等）：重连可观测（ClientCount），状态同步以状态视图收敛为准
         var deadline = Environment.TickCount64 + 10000;
         while (_plc.ClientCount == 0 && Environment.TickCount64 < deadline) await Task.Delay(100);
-        List<SecsItem>? carriers = null;
         deadline = Environment.TickCount64 + 10000;
-        while (Environment.TickCount64 < deadline && (carriers == null || carriers.Count == 0))
+        while (Environment.TickCount64 < deadline)
         {
+            var st4 = _svc.GetStatusView().Plcs[0].Stations[3];
+            if (st4.State == 1) break;
             await Task.Delay(100);
-            carriers = (await _mcs.QuerySvidAsync(15))[0].Children!;
         }
         var ev = await _mcs.WaitForEventAsync(204, 1000);
         Assert.Null(ev);                               // 断线期间的事件不补报
-        // 状态已同步：S1F3 查询能反映 PLC 实况（快照合并），但无 204 事件
-        Assert.Single(carriers);
-        Assert.Equal("CARRIER004", carriers[0].Children![0].AsString());
+        // 载具确认机制：快照兜底已移除（ID 只经扫码/AGVC/命令/补填）→ SVID15 不含；等 ID 的注册不跨重连补登
+        var carriers = (await _mcs.QuerySvidAsync(15))[0].Children!;
+        Assert.Empty(carriers);
     }
 
     [Fact]
@@ -209,11 +212,14 @@ public sealed class ScenarioTests : IAsyncLifetime
     [Fact]
     public async Task Scenario12_CarrierRemoved_203()
     {
-        // 取走路径：1→0 直跳与经 3→0 都报 203，RPT2=载具ID+位置（MCS 现场约定 2026-08-17）
+        // 取走路径：1→0 直跳报 203，RPT2=载具ID+位置（主表 ID；MCS 现场约定 2026-08-17）
         _plc.SetCarrierId(2, "CARRIER002");
         _plc.SetStationState(2, 2);
         await Task.Delay(200);
-        _plc.SetStationState(2, 1);                                      // 放入 → 204
+        _plc.SetStationState(2, 1);                                      // 放入 → 中间态等 ID
+        Assert.Null(await _mcs.WaitForEventAsync(204, 500));
+        var (ok, _) = _svc.FillCarrierPending(1, 2, "CARRIER002");
+        Assert.True(ok);
         var e204 = await _mcs.WaitForEventAsync(204);
         Assert.NotNull(e204);
         _plc.SetStationState(2, 0);                                      // AGV 路径直跳取出（1→0）→ 203
@@ -221,6 +227,7 @@ public sealed class ScenarioTests : IAsyncLifetime
         Assert.NotNull(e203);
         var l = e203!.Items()[0].Children!;
         var rpt = l[2].Children![0].Children![1];                        // RPT2: A id, A CarrierLoc（MCS 现场约定）
+        Assert.Equal("CARRIER002", rpt.Children![0].AsString());         // 上报参数取主表 ID
         Assert.Equal("BUFFER01_02", rpt.Children![1].AsString());
     }
 
@@ -267,11 +274,14 @@ public sealed class ScenarioTests : IAsyncLifetime
     [Fact]
     public async Task Scenario14c_Sources_RecordedPerPath()
     {
-        // 来源映射：204→AGV、扫码 201→MANUAL、S2F41 命令→MCS（站口主表 InstallSource）
+        // 来源映射：204→AGV（补填 204 站按等待事件推导来源）、扫码 201→MANUAL、S2F41 命令→MCS（站口主表 InstallSource）
         _plc.SetCarrierId(7, "SRC001");
         _plc.SetStationState(7, 2);
         await Task.Delay(300);
-        _plc.SetStationState(7, 1);
+        _plc.SetStationState(7, 1);                                      // 放入 → 中间态等 ID
+        Assert.Null(await _mcs.WaitForEventAsync(204, 500));
+        var (ok, _) = _svc.FillCarrierPending(1, 7, "SRC001");
+        Assert.True(ok);
         Assert.NotNull(await _mcs.WaitForEventAsync(204));
         Assert.Contains(_svc.Ledger, r => r.Station == 7 && r.CarrierId == "SRC001" && r.InstallSource == "AGV");
 
@@ -288,9 +298,9 @@ public sealed class ScenarioTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Scenario14d_Remove_RetainsLedgerRow()
+    public async Task Scenario14d_Remove_ClearsLedgerRow()
     {
-        // 取走保留历史：Carriers 不含、Ledger 含 state=0 + 载具 ID + 来源 + 更新时间；再安装覆盖
+        // 取走清 ID（新口径 2026-08-19）：Carriers 不含、Ledger 含 state=0 + 空 ID/来源；再安装覆盖
         var hcack = await _mcs.SendS2F41Async("CarrierDataInstall",
             ("CARRIERID", "SRC004"), ("CARRIERLOC", "BUFFER01_10"));
         Assert.Equal(4, hcack);
@@ -306,8 +316,8 @@ public sealed class ScenarioTests : IAsyncLifetime
         Assert.DoesNotContain(_svc.Carriers, c => c.CarrierId == "SRC004");
         var row = _svc.Ledger.Single(r => r.Station == 10);
         Assert.Equal(RegisterMap.StEmpty, row.State);
-        Assert.Equal("SRC004", row.CarrierId);
-        Assert.Equal("MCS", row.InstallSource);
+        Assert.Equal("", row.CarrierId);                     // 取走清 ID（防旧 ID 污染下次等 ID 判断）
+        Assert.Equal("", row.InstallSource);
         Assert.NotEqual("", row.UpdatedAt);
 
         // 再安装同站：历史覆盖为最新一条（异步，等执行完成）
@@ -375,7 +385,7 @@ public sealed class ScenarioTests : IAsyncLifetime
                 if (st1.StationState == 0) break;
                 await Task.Delay(200);
             }
-            Assert.Equal("TESTID1", st1.CarrierId);             // 离开行保留 ID
+            Assert.Equal("", st1.CarrierId);                    // 取走清 ID（新口径 2026-08-19）
             Assert.Equal(0, st1.StationState);
         }
         finally
@@ -404,7 +414,10 @@ public sealed class ScenarioTests : IAsyncLifetime
         await mcs2.EstablishAsync();
         _plc.SetStationState(1, 2);
         await Task.Delay(200);
-        _plc.SetStationState(1, 1);                                      // 重连后新事件正常
+        _plc.SetStationState(1, 1);                                      // 重连后新事件正常（中间态等 ID）
+        Assert.Null(await mcs2.WaitForEventAsync(204, 500));
+        var (ok, _) = _svc.FillCarrierPending(1, 1, "CARRIER015");
+        Assert.True(ok);
         var ev = await mcs2.WaitForEventAsync(204);
         Assert.NotNull(ev);
         mcs2.Dispose();
@@ -413,7 +426,8 @@ public sealed class ScenarioTests : IAsyncLifetime
     [Fact]
     public async Task Scenario16_Restart_RecoverFromPlc()
     {
-        // 重启恢复：台账为空时 SVID 15 反映 PLC 实况（快照合并）
+        // 重启恢复（载具确认机制 2026-08-19）：快照兜底已移除 → PLC 有货有 ID 也不自动进台账；
+        // 等 ID 的注册不跨重启补登（无 DB 中间态），补填被拒——ID 只能经扫码/AGVC/命令/补填写入
         _plc.SetCarrierId(5, "CARRIER005");
         _plc.SetStationState(5, 1);
         // 条件等轮询器读到状态+ID（替代 400ms 固定等）：重启前快照必须已含 CARRIER005
@@ -446,8 +460,9 @@ public sealed class ScenarioTests : IAsyncLifetime
             while (!svc2.AllPlcsReady && Environment.TickCount64 < ready) await Task.Delay(100);
             var items = await mcs2.QuerySvidAsync(15);
             var carriers = items[0].Children!;
-            Assert.Single(carriers);                                     // PLC 实况已反映
-            Assert.Equal("CARRIER005", carriers[0].Children![0].AsString());
+            Assert.Empty(carriers);                                      // 无兜底：PLC 实况不进台账
+            var (ok, _) = svc2.FillCarrierPending(1, 5, "CARRIER005");
+            Assert.False(ok);                                            // 无中间态注册 → 补填被拒
             mcs2.Dispose();
         }
         finally
@@ -503,7 +518,10 @@ public sealed class ScenarioTests : IAsyncLifetime
         _plc.SetReg(RegisterMap.RegStationState, 99);                    // 站口 1 非法状态码
         await Task.Delay(300);                                           // 轮询处理非法值不崩溃
         _plc.SetCarrierId(1, "CARRIER099");
-        _plc.SetStationState(1, 1);                                      // 99→1 仍应触发放入事件
+        _plc.SetStationState(1, 1);                                      // 99→1 仍应触发放入事件（中间态等 ID）
+        Assert.Null(await _mcs.WaitForEventAsync(204, 500));
+        var (ok, _) = _svc.FillCarrierPending(1, 1, "CARRIER099");
+        Assert.True(ok);
         var ev = await _mcs.WaitForEventAsync(204);
         Assert.NotNull(ev);
     }
@@ -530,10 +548,13 @@ public sealed class ScenarioTests : IAsyncLifetime
             var ready = Environment.TickCount64 + 15000;
             while (!svc1.AllPlcsReady && Environment.TickCount64 < ready) await Task.Delay(100);
 
-            _plc.SetCarrierId(6, "CARRIER006");                          // 正常 204 事件 → 台账入库
+            _plc.SetCarrierId(6, "CARRIER006");                          // 正常 204 事件 → 台账入库（中间态等 ID → 补填）
             _plc.SetStationState(6, 2);
             await Task.Delay(200);
             _plc.SetStationState(6, 1);
+            Assert.Null(await mcs1.WaitForEventAsync(204, 500));
+            var (ok, _) = svc1.FillCarrierPending(1, 6, "CARRIER006");
+            Assert.True(ok);
             Assert.NotNull(await mcs1.WaitForEventAsync(204));
             mcs1.Dispose();
             svc1.Dispose();
@@ -690,11 +711,14 @@ public sealed class ScenarioTests : IAsyncLifetime
             mcs.Connect("127.0.0.1", 5008);
             await mcs.EstablishAsync();
 
-            // 1) 事件流 + 日志 API
+            // 1) 事件流 + 日志 API（放入 → 中间态等 ID → 补填 → 204）
             _plc.SetCarrierId(3, "INFO001");
             _plc.SetStationState(3, 2);
             await Task.Delay(200);
             _plc.SetStationState(3, 1);
+            Assert.Null(await mcs.WaitForEventAsync(204, 500));
+            var (ok, _) = svc.FillCarrierPending(1, 3, "INFO001");
+            Assert.True(ok);
             Assert.NotNull(await mcs.WaitForEventAsync(204));
             await Task.Delay(200);
 
@@ -1056,11 +1080,11 @@ public sealed class ScenarioTests : IAsyncLifetime
             using (var doc = JsonDocument.Parse(q.Body))
                 Assert.Equal("10001", doc.RootElement.GetProperty("cmsIndex").GetString());
 
-            // 响应 data[0].carrierId 直接回 ID → BufferC 自己写 PLC（命令1）+ 台账 + 201
+            // 响应 data[0].carrierId 直接回 ID → BufferC 自己写 PLC（命令1）+ 台账 + 204（pending 出口）
             var deadline2 = Environment.TickCount64 + 10000;
             while (plc.GetCarrierId(1) == "" && Environment.TickCount64 < deadline2) await Task.Delay(50);
             Assert.Equal("AGV001", plc.GetCarrierId(1));
-            Assert.NotNull(await mcs.WaitForEventAsync(201));
+            Assert.NotNull(await mcs.WaitForEventAsync(204));
             Assert.Contains(svc.Carriers, c => c.CarrierLoc == "BUFFER01_01" && c.CarrierId == "AGV001");
 
             // 变化即推：201（带 ID）触发 pushDeviceStatusInfo，trayId 为刚写入的货物 ID
@@ -1229,8 +1253,8 @@ public sealed class ScenarioTests : IAsyncLifetime
     [Fact]
     public async Task Scenario37_ManualState5_EventsAndAbnormalTransitions()
     {
-        // 状态区新增 5=（人工）有货已存储：0→5 报 201（空 ID，ID 后写）→ 扫码补 501+201；
-        // 取走按路径：5→0 直跳报 MANUAL、5→3→0 经 AGV 报 AGV；异常跳变 1→5/5→1 只记日志不上报
+        // 状态区 5=（人工）有货已存储：0→5 登记中间态等 ID（载具确认机制 2026-08-19，不立即上报）→ 扫码补 501+201；
+        // 取走按路径：5→0 直跳报 202、5→3→0 经 AGV 报 203；异常跳变 1→5/5→1 只记日志不上报
         using var plc = new PlcSim(index: 1);
         int plcPort = plc.Start();
         var cfg = new BufferCConfig
@@ -1252,16 +1276,13 @@ public sealed class ScenarioTests : IAsyncLifetime
             mcs.Connect("127.0.0.1", 5031);
             await mcs.EstablishAsync();
 
-            // 1) 人工放入 0→5：报 201（ID 空）+ 台账写入
+            // 1) 人工放入 0→5：等 ID——不立即报 201，台账可见中间态（pending_ceid=201）
             plc.SetStationState(1, 5);
-            var e201 = await mcs.WaitForEventAsync(201);
-            Assert.NotNull(e201);
-            var rpt = e201!.Items()[0].Children![2].Children![0].Children![1];
-            Assert.Equal("", rpt.Children![0].AsString());                       // CarrierID 空
-            Assert.Equal("BUFFER01_01", rpt.Children![1].AsString());
-            Assert.Contains(svc.Carriers, c => c.CarrierLoc == "BUFFER01_01");
+            Assert.Null(await mcs.WaitForEventAsync(201, 500));
+            Assert.Contains(svc.GetInventoryView(), r => r.Station == 1 && r.PendingCeid == 201);
+            Assert.DoesNotContain(svc.Carriers, c => c.CarrierLoc == "BUFFER01_01");   // SVID 载具列表：有货无 ID 不上报（现场口径 2026-08-17）
 
-            // 2) 扫码补 ID：501 + 201（带 ID）→ PLC 已写入
+            // 2) 扫码补 ID：501 + 201（带 ID）→ PLC 已写入 → 中间态清理（pending_id 留痕）
             plc.TriggerScan(1, "MAN5001");
             Assert.NotNull(await mcs.WaitForEventAsync(501));
             Assert.NotNull(await mcs.WaitForEventAsync(201));
@@ -1273,8 +1294,11 @@ public sealed class ScenarioTests : IAsyncLifetime
             var rptM = e202m!.Items()[0].Children![2].Children![0].Children![1];
             Assert.Equal("BUFFER01_01", rptM.Children![1].AsString());
 
-            // 4) 人工放 + AGV 取：0→5 → 5→3（无事件）→ 3→0：203 RPT2=载具ID+位置
+            // 4) 人工放 + AGV 取：0→5（等 ID）→ 扫码补 → 5→3（无事件）→ 3→0：203 RPT2=载具ID+位置
             plc.SetStationState(2, 5);
+            Assert.Null(await mcs.WaitForEventAsync(201, 500));
+            plc.TriggerScan(2, "MAN5002");
+            Assert.NotNull(await mcs.WaitForEventAsync(501));
             Assert.NotNull(await mcs.WaitForEventAsync(201));
             plc.SetStationState(2, 3);
             await Task.Delay(200);
@@ -1283,10 +1307,13 @@ public sealed class ScenarioTests : IAsyncLifetime
             var rptA = e203a!.Items()[0].Children![2].Children![0].Children![1];
             Assert.Equal("BUFFER01_02", rptA.Children![1].AsString());
 
-            // 5) 异常跳变只记日志不上报：0→2→1（204 正常）→ 1→5 无 201 → 5→1 无 204 → 1→0 收尾
+            // 5) 异常跳变只记日志不上报：0→2→1（等 ID）→ 补填出 204 → 1→5 无 201 → 5→1 无 204 → 1→0 收尾（203 带 ID）
             plc.SetStationState(3, 2);
             await Task.Delay(200);
             plc.SetStationState(3, 1);
+            Assert.Null(await mcs.WaitForEventAsync(204, 500));
+            var (ok, _) = svc.FillCarrierPending(1, 3, "MAN5003");
+            Assert.True(ok);
             Assert.NotNull(await mcs.WaitForEventAsync(204));
             plc.SetStationState(3, 5);
             Assert.Equal(0, await mcs.WaitForEventCountAsync(201, 1, 400));      // 异常 1→5 不上报
@@ -1331,9 +1358,9 @@ public sealed class ScenarioTests : IAsyncLifetime
             mcs.Connect("127.0.0.1", 5034);
             await mcs.EstablishAsync();
 
-            // 1) 人工放入 0→5 → 201 → 推 (service=0, present=1, trayId="")
+            // 1) 人工放入 0→5 → 等 ID（载具确认机制：不立即报 201）→ 推 (service=0, present=1, trayId="")
             plc.SetStationState(1, 5);
-            Assert.NotNull(await mcs.WaitForEventAsync(201));
+            Assert.Null(await mcs.WaitForEventAsync(201, 500));
             // 2) 扫码补 ID → 501 + 201 → 推 trayId=SCANP1
             plc.TriggerScan(1, "SCANP1");
             Assert.NotNull(await mcs.WaitForEventAsync(501));
@@ -1507,81 +1534,4 @@ public sealed class ScenarioTests : IAsyncLifetime
         Assert.Contains("0.1.0", s1f14.Sml);
     }
 
-    /// <summary>
-    /// AGVC 假服务器（HttpListener）：记录请求路径+body；应答 queryMachines 规格
-    /// {code, message, reqCode, interrupt, data:[{carrierId,...}]}。
-    /// 注入：前 FailCount 次应答 code="1"（无 data）；QueryCode=正常 code；QueryCarrierId=null 时 data 空数组。
-    /// FreePort()：探测空闲端口（另用于模拟"服务器不可达"）。
-    /// </summary>
-    private sealed class FakeAgvcServer : IDisposable
-    {
-        private readonly HttpListener _listener = new();
-        private readonly CancellationTokenSource _cts = new();
-        private readonly List<(string Path, string Body)> _requests = new();
-        private readonly object _lock = new();
-        private volatile int _failCount;
-
-        public volatile string QueryCode = "0";          // 正常应答的 code 字段
-        public volatile string? QueryCarrierId;          // null → data 空数组
-        public int Port { get; private set; }
-        public int FailCount { set => _failCount = value; }
-        public IReadOnlyList<(string Path, string Body)> Requests { get { lock (_lock) return _requests.ToList(); } }
-
-        public FakeAgvcServer()
-        {
-            Port = FreePort();
-            _listener.Prefixes.Add($"http://127.0.0.1:{Port}/");
-            _listener.Start();
-            _ = Task.Run(() => AcceptLoopAsync(_cts.Token));
-        }
-
-        public static int FreePort()
-        {
-            var probe = new TcpListener(IPAddress.Loopback, 0);
-            probe.Start();
-            int port = ((IPEndPoint)probe.LocalEndpoint).Port;
-            probe.Stop();
-            return port;
-        }
-
-        private async Task AcceptLoopAsync(CancellationToken ct)
-        {
-            while (!ct.IsCancellationRequested)
-            {
-                HttpListenerContext ctx;
-                try { ctx = await _listener.GetContextAsync(); }
-                catch { break; }                                 // Stop() 时退出
-                _ = Task.Run(async () =>
-                {
-                    string body = await new StreamReader(ctx.Request.InputStream).ReadToEndAsync();
-                    lock (_lock) _requests.Add((ctx.Request.Url!.AbsolutePath, body));
-                    // FailCount 只作用于 queryMachines（推送请求不消耗失败计数，保证重试断言确定性）
-                    bool fail = _failCount > 0 && ctx.Request.Url!.AbsolutePath == "/mpms/api/hsmsRpc/queryMachines";
-                    if (fail) Interlocked.Decrement(ref _failCount);
-                    string code = fail ? "1" : QueryCode;
-                    string resp;
-                    if (ctx.Request.Url!.AbsolutePath == "/mpms/api/hsmsRpc/pushDeviceStatusInfo")
-                        resp = $"{{\"code\":\"{code}\",\"data\":\"\",\"interrupt\":false,\"message\":\"{(fail ? "busy" : "ok")}\",\"reqCode\":\"REQ001\"}}";
-                    else
-                    {
-                        string data = (fail || QueryCarrierId == null) ? "[]" : $"[{{\"carrierId\":\"{QueryCarrierId}\"}}]";
-                        resp = $"{{\"code\":\"{code}\",\"message\":\"{(fail ? "busy" : "ok")}\",\"reqCode\":\"REQ001\",\"interrupt\":false,\"data\":{data}}}";
-                    }
-                    var buf = Encoding.UTF8.GetBytes(resp);
-                    ctx.Response.StatusCode = 200;
-                    ctx.Response.ContentType = "application/json";
-                    ctx.Response.ContentLength64 = buf.Length;
-                    await ctx.Response.OutputStream.WriteAsync(buf, ct);
-                    ctx.Response.OutputStream.Close();
-                }, ct);
-            }
-        }
-
-        public void Dispose()
-        {
-            _cts.Cancel();
-            _listener.Stop();
-            _listener.Close();
-        }
-    }
 }

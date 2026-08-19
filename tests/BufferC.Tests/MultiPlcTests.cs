@@ -62,13 +62,21 @@ public sealed class MultiPlcTests : IClassFixture<MultiPlcFixture>
     {
         using var mcs = await ConnectMcsAsync();
         // 每台 PLC 站口 1 放入 → 9 个 204，载具 ID 各自正确。
-        // 不设中间停留：轮询器看到 0→1 直跳同样触发 204（ID 在状态变化时读），事件语义不变——消除 400ms pacing 的时序依赖
+        // 不设中间停留：轮询器看到 0→1 直跳同样登记中间态（载具确认机制 2026-08-19：等 ID 才上报）
         for (int i = 0; i < MultiPlcFixture.PlcCount; i++)
         {
             _fx.Plcs[i].SetCarrierId(1, $"C{i + 1:000}");
             _fx.Plcs[i].SetStationState(1, 1);
         }
+        Assert.Equal(0, await mcs.WaitForEventCountAsync(204, 1, 800));   // 等 ID：无事件
 
+        // 等 9 台中间态全部登记 → 逐台补填 → 9 个 204
+        var deadline = Environment.TickCount64 + 10000;
+        while (Environment.TickCount64 < deadline
+            && _fx.Svc.GetInventoryView().Count(r => r.PendingCeid == 204) < MultiPlcFixture.PlcCount)
+            await Task.Delay(50);
+        for (int i = 0; i < MultiPlcFixture.PlcCount; i++)
+            Assert.True(_fx.Svc.FillCarrierPending(i + 1, 1, $"C{i + 1:000}").Ok);
         Assert.Equal(MultiPlcFixture.PlcCount, await mcs.WaitForEventCountAsync(204, MultiPlcFixture.PlcCount, 10000));
 
         // S1F3 全量查询：EnhancedCarriers 反映 9 台实况
@@ -81,7 +89,7 @@ public sealed class MultiPlcTests : IClassFixture<MultiPlcFixture>
     public async Task SinglePlcDisconnect_OthersUnaffected()
     {
         using var mcs = await ConnectMcsAsync();
-        // 掐断 5 号 PLC → 其余 8 台事件照常
+        // 掐断 5 号 PLC → 其余 8 台事件照常（等 ID → 补填 → 204）
         _fx.Plcs[4].DropConnection();
         var dropDeadline = Environment.TickCount64 + 5000;
         while (_fx.Plcs[4].ClientCount > 0 && Environment.TickCount64 < dropDeadline) await Task.Delay(50);   // 等 BufferC 侧连接断开（条件替代 1500ms 固定等）
@@ -89,7 +97,16 @@ public sealed class MultiPlcTests : IClassFixture<MultiPlcFixture>
         {
             if (i == 4) continue;
             _fx.Plcs[i].SetCarrierId(2, $"D{i + 1:000}");
-            _fx.Plcs[i].SetStationState(2, 1);   // 0→1 直跳同样触发 204（与 FifteenPlcs 同理，去 pacing）
+            _fx.Plcs[i].SetStationState(2, 1);   // 0→1 直跳同样登记中间态（与 FifteenPlcs 同理，去 pacing）
+        }
+        var deadline = Environment.TickCount64 + 10000;
+        while (Environment.TickCount64 < deadline
+            && _fx.Svc.GetInventoryView().Count(r => r.PendingCeid == 204) < MultiPlcFixture.PlcCount - 1)
+            await Task.Delay(50);
+        for (int i = 0; i < MultiPlcFixture.PlcCount; i++)
+        {
+            if (i == 4) continue;
+            Assert.True(_fx.Svc.FillCarrierPending(i + 1, 2, $"D{i + 1:000}").Ok);
         }
         Assert.Equal(MultiPlcFixture.PlcCount - 1, await mcs.WaitForEventCountAsync(204, MultiPlcFixture.PlcCount - 1, 10000));
     }
