@@ -27,7 +27,9 @@ async function invRefresh() {
         <td>${esc(x.stationState)} ${esc(x.stateLabel)}</td>
         <td>${esc(x.carrierId) || '（空）'}</td>
         <td>${esc(x.installSource) || '—'}</td>
+        <td>${x.carrierConfirmed ? '<span class="badge b-ok">✓ 已确认</span>' : x.carrierId ? '<span class="fail-txt">未确认</span>' : '—'}</td>
         <td>${x.pendingCeid ? `<span class="chip-pending">等待货物ID(${x.pendingCeid})</span> ${pendingDurFrom(x.pendingAt)}` : '—'}</td>
+        <td>${esc(x.pendingId) || '—'}</td>
         <td>${esc(x.alarmCode) || '—'}</td>
         <td>${esc(x.updatedAt) || '—'}</td>
         <td>${esc(x.cmdStateLabel)}</td>
@@ -37,7 +39,7 @@ async function invRefresh() {
         <td>${esc(x.cmdSeq) || '—'}</td>
         <td>${esc(x.cmdSource) || '—'}</td>
       </tr>`).join('')
-                 : '<tr><td colspan="15" class="empty-row">（无 PLC 配置）</td></tr>');
+                 : '<tr><td colspan="17" class="empty-row">（无 PLC 配置）</td></tr>');
   } catch (e) { reportError(wrap, e); }
 }
 

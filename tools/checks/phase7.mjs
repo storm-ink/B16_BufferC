@@ -48,6 +48,11 @@ export default async ({ ev, wait, baseUrl }) => {
     ok: await ev(`document.querySelectorAll('#tbl-inv-body tr').length && (() => { const t = [...document.querySelectorAll('#tbl-inv-body tr')].find(r => r.textContent.includes('UI001')); return t !== undefined; })()`),
     got: await ev(`(() => { const t = [...document.querySelectorAll('#tbl-inv-body tr')].find(r => r.textContent.includes('UI001')); return t ? t.textContent.slice(0, 90) : '未找到 UI001'; })()`),
   });
+  out.push({
+    label: '台账新列：确认=✓ 已确认、等待ID=UI001（留痕），表头含两列',
+    ok: await ev(`(() => { const h = [...document.querySelectorAll('#tbl-inv th')].map(x => x.textContent); const t = [...document.querySelectorAll('#tbl-inv-body tr')].find(r => r.children[4].textContent.includes('UI001')); return h.includes('确认') && h.includes('等待ID') && t && t.children[6].textContent.includes('已确认') && t.children[8].textContent.includes('UI001'); })()`),
+    got: await ev(`(() => { const t = [...document.querySelectorAll('#tbl-inv-body tr')].find(r => r.children[4].textContent.includes('UI001')); return t ? { 确认: t.children[6].textContent.replace(/\\s+/g, ' '), 等待ID: t.children[8].textContent.replace(/\\s+/g, ' ') } : '未找到 UI001'; })()`),
+  });
   await ev(`document.querySelector('#fillBox [data-action="fill-close"]').click(); true`);
   await wait(3500);
   out.push({

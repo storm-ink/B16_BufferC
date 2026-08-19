@@ -989,7 +989,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
         int StationState, string StateLabel, int Avail, string UnitStateLabel,
         int AlarmCode, string CarrierId, string InstallSource, string UpdatedAt,
         int CmdState, string CmdStateLabel, int CmdType, string CmdCarrierId, string CmdTime, uint CmdSeq, string CmdSource,
-        int PendingCeid, string PendingAt, string PendingLabel);
+        int PendingCeid, string PendingAt, int CarrierConfirmed, string PendingId, string PendingLabel);
 
     private static string StateLabelOf(ushort s) => s switch
     {
@@ -1020,7 +1020,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
             r.AlarmCode, r.CarrierId, r.InstallSource, r.UpdatedAt,
             r.CmdState, CmdStateLabelOf(r.CmdState),
             r.CmdType, r.CmdCarrierId, r.CmdTime, r.CmdSeq, r.CmdSource,
-            r.PendingCeid, r.PendingAt,
+            r.PendingCeid, r.PendingAt, r.CarrierConfirmed, r.PendingId,
             r.PendingCeid != 0 ? $"等待货物ID({r.PendingCeid})" : "—")).ToList();
 
     // ---------- S2F41 主机命令 ----------
