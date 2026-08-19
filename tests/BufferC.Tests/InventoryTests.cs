@@ -222,6 +222,29 @@ public class InventoryTests
     }
 
     [Fact]
+    public void RecordCommandDone_DirectExecute_RecordsHistory()
+    {
+        // 取走清理直执行路径：不经队列（PendingCommands 不含）、cmd_state=0/3 + 元数据作最近一条历史（2026-08-19 现场：主表需看到「取走」命令）
+        var inv = new Inventory(null, 1);
+        inv.RecordCommandDone(1, 2, RegisterMap.CmdClear, "GONE001", "MANUAL", 7, ok: true);
+        var row = inv.Ledger.Single(r => r.Station == 2);
+        Assert.Equal(0, row.CmdState);
+        Assert.Equal(RegisterMap.CmdClear, row.CmdType);
+        Assert.Equal("GONE001", row.CmdCarrierId);
+        Assert.Equal("MANUAL", row.CmdSource);
+        Assert.Equal(7u, row.CmdSeq);
+        Assert.NotEqual("", row.CmdTime);
+        Assert.Empty(inv.PendingCommands);
+
+        inv.RecordCommandDone(1, 2, RegisterMap.CmdClear, "GONE002", "AGV", 8, ok: false);
+        row = inv.Ledger.Single(r => r.Station == 2);
+        Assert.Equal(3, row.CmdState);
+        Assert.Equal("GONE002", row.CmdCarrierId);
+        Assert.Equal("AGV", row.CmdSource);
+        Assert.Equal(8u, row.CmdSeq);
+    }
+
+    [Fact]
     public void CommandQueue_PersistsAcrossRestart()
     {
         var db = TempDb();

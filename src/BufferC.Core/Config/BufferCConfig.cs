@@ -16,6 +16,7 @@ public sealed class BufferCConfig
     public int ReconnectMaxBackoffMs { get; set; } = 30_000;   // 断线重连退避封顶（D6 配置化）
     public int HistoryRetentionRows { get; set; } = 2000;  // 历史表每表保留行数（D6 配置化）
     public int DebugReadChunkWords { get; set; } = 16;     // Web 调试读（/api/debug/regread）每帧字数：现场 PLC 对长帧读慢/异常，默认 16 字循环短读（轮询器同款已验证）
+    public int CmdWriteChunkWords { get; set; } = 16;      // 命令区 FC16 写每帧字数（命令通道清零 401~672/写货物 ID）：现场 PLC 对 123 字长帧写无响应（3s 超时），16 字已验证（与读侧同策）
     public string LogFile { get; set; } = "bufferc.log";
     public int LogRetentionDays { get; set; } = 7;           // 滚动日志保留天数（按天滚动，启动与日期翻转时清理过期文件）
     public string? AuditFile { get; set; } = "bufferc.audit.log";   // 审计日志基名（SECS 收发摘要/命令生命周期）；null/空=审计通道关闭
@@ -64,6 +65,8 @@ public sealed class BufferCConfig
             errors.Add($"historyRetentionRows 非法: {cfg.HistoryRetentionRows}（允许 100~100000）");
         if (cfg.DebugReadChunkWords is < 1 or > 125)
             errors.Add($"debugReadChunkWords 非法: {cfg.DebugReadChunkWords}（允许 1~125，Modbus 单帧上限）");
+        if (cfg.CmdWriteChunkWords is < 1 or > 123)
+            errors.Add($"cmdWriteChunkWords 非法: {cfg.CmdWriteChunkWords}（允许 1~123，FC16 单帧上限）");
         int maxStations = cfg.Plcs.Count > 0 ? cfg.Plcs.Max(p => p.Stations) : RegisterMap.StationsPerPlc;
         if (cfg.Agvc.CmsIndexBase <= maxStations)
             errors.Add($"agvc.cmsIndexBase {cfg.Agvc.CmsIndexBase} 非法（必须大于最大站口数 {maxStations}，否则站口位溢出到机台位）");

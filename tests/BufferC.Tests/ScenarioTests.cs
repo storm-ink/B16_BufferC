@@ -1294,6 +1294,15 @@ public sealed class ScenarioTests : IAsyncLifetime
             var rptM = e202m!.Items()[0].Children![2].Children![0].Children![1];
             Assert.Equal("BUFFER01_01", rptM.Children![1].AsString());
 
+            // 3b) 取走后状态视图不残留快照 ID（2026-08-19 现场：PLC 清区后页面仍显示旧 ID——取走清快照 + 空站口兜底验证双保险）
+            var clearDeadline = Environment.TickCount64 + 5000;
+            while (Environment.TickCount64 < clearDeadline)
+            {
+                if (svc.GetStatusView().Plcs[0].Stations[0].CarrierId == "") break;
+                await Task.Delay(100);
+            }
+            Assert.Equal("", svc.GetStatusView().Plcs[0].Stations[0].CarrierId);
+
             // 4) 人工放 + AGV 取：0→5（等 ID）→ 扫码补 → 5→3（无事件）→ 3→0：203 RPT2=载具ID+位置
             plc.SetStationState(2, 5);
             Assert.Null(await mcs.WaitForEventAsync(201, 500));

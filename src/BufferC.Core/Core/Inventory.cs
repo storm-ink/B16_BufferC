@@ -364,6 +364,20 @@ public sealed class Inventory : IDisposable
         }
     }
 
+    /// <summary>直执行命令完成记录（取走清理路径：不经队列、worker 不感知）：cmd_state=0/3 + 命令元数据作最近一条历史（与 QueueCommand→CompleteCommand/FailCommand 语义一致）</summary>
+    public void RecordCommandDone(int plcIndex, int station, ushort cmdType, string carrierId, string source, uint seq, bool ok)
+    {
+        var key = Key(plcIndex, station);
+        var time = Now();
+        lock (_lock)
+        {
+            if (!_stations.TryGetValue(key, out var row)) return;
+            _stations[key] = row with { CmdState = ok ? (ushort)0 : (ushort)3, CmdType = cmdType, CmdCarrierId = carrierId, CmdTime = time, CmdSeq = seq, CmdSource = source };
+            Exec("UPDATE stations SET cmd_state=$st, cmd_type=$ct, cmd_carrier_id=$cc, cmd_time=$t, cmd_seq=$q, cmd_source=$cs WHERE station_key=$k",
+                 ("$st", (int)(ok ? 0 : 3)), ("$ct", (int)cmdType), ("$cc", carrierId), ("$t", time), ("$q", (long)seq), ("$cs", source), ("$k", key));
+        }
+    }
+
     /// <summary>回写命令编号（执行结束时调用：失败命令也要记录最后一次 400 触发值；MarkCommandRunning 时编号尚未分配故先写 0）</summary>
     public void WriteCommandSeq(int plcIndex, int station, uint seq)
     {

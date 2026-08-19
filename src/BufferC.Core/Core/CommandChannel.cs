@@ -69,13 +69,14 @@ public sealed class CommandChannel
                     {
                         // PLC 协议（现场确认）：400 出现新值才扫描 401 以上执行。
                         // ① 整段清零 401~672（清掉旧命令/旧 ID，防非幂等重复执行）
+                        //    FC16 小片写入（cmdWriteChunkWords 默认 16）：现场 PLC 对 123 字长帧写无响应（3s 超时），16 字已验证
                         _client.WriteMultipleRegisters((ushort)RegisterMap.RegCmdStation,
-                            new ushort[RegisterMap.RegCmdAreaWords]);
+                            new ushort[RegisterMap.RegCmdAreaWords], _app.CmdWriteChunkWords);
                         // ② 写【各站操作命令】→ ③ 写【货物ID写入】（现场确认写序：命令码在前、ID 在后）
                         _client.WriteSingleRegister((ushort)(RegisterMap.RegCmdStation + station - 1), cmd);
                         if (cmd == RegisterMap.CmdWrite)
                             _client.WriteMultipleRegisters((ushort)(RegisterMap.RegCmdCarrierId + (station - 1) * 16),
-                                RegisterMap.PackAscii(carrierId ?? "", _cfg.ByteOrder));
+                                RegisterMap.PackAscii(carrierId ?? "", _cfg.ByteOrder), _app.CmdWriteChunkWords);
                         areaReady = true;                     // 区域就位——此后失败只重写 400 新编号
                     }
                     // ③ 写 400（新编号）触发执行；成功与否以回显匹配为唯一标准

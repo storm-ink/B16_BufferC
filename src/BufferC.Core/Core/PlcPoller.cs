@@ -27,6 +27,7 @@ public sealed class PlcPoller
     private readonly PlcSnapshot _snap = new();
     private PlcSnapshot? _snapCopy;                    // 供 SVID 查询读取的最近快照（跨线程）
     private ushort[]? _prevStates;
+    private long _lastIdVerifyTick;                    // 空站口残留 ID 验证节流（2026-08-19 现场：PLC 清区后快照旧 ID 残留页面）
 
     public PlcPoller(PlcConfig cfg, BufferCConfig app, EventEngine engine, IEventSink sink)
     {
@@ -49,11 +50,15 @@ public sealed class PlcPoller
     public PlcConfig Config => _cfg;
     public PlcSnapshot? Snapshot => _snapCopy;
 
+    /// <summary>取走后清快照 ID（事件在轮询线程同步派发，无并发）：PLC 清区在命令2 回显后才生效，
+    /// 快照在 1/5→0 时读到的旧 ID 若不即时清除会永久残留（状态不再变化即不再重读，状态视图兜底显示旧 ID）</summary>
+    public void ClearSnapshotCarrier(int station) => _snap.CarrierId[station - 1] = "";
+
     // ---------- 寄存器直读写（Web「PLC 调试」面板联调用；断线抛 ModbusException/IOException） ----------
     public ushort[] ReadRegs(int addr, int count) =>
         _client.ReadHoldingRegisters((ushort)addr, (ushort)count, _app.DebugReadChunkWords);   // Web 调试读：默认 16 字循环短读（现场长帧读慢/异常）
     public void WriteReg(int addr, ushort value) => _client.WriteSingleRegister((ushort)addr, value);
-    public void WriteRegs(int addr, ushort[] values) => _client.WriteMultipleRegisters((ushort)addr, values);
+    public void WriteRegs(int addr, ushort[] values) => _client.WriteMultipleRegisters((ushort)addr, values, _app.CmdWriteChunkWords);   // Web 调试写同命令通道小片策略
 
     // ---------- 运行统计（界面/联调用） ----------
     public bool IsConnected;
@@ -161,6 +166,16 @@ public sealed class PlcPoller
                     _snap.CarrierId[s] = ReadStationId(s + 1);
         }
         _prevStates = (ushort[])curStates.Clone();
+
+        // 2b. 空站口残留 ID 兜底验证（2026-08-19 现场：PLC 清区后快照旧 ID 永久残留页面）：
+        // 状态 0 且快照仍有 ID → 每 2s 重读该站 ID 区直到确认空（16 字小片，真 PLC 已验证可承受；覆盖 PLC 侧自行清区等外部路径）
+        if (Environment.TickCount64 - _lastIdVerifyTick >= 2000)
+        {
+            for (int s = 0; s < _snap.StationCount; s++)
+                if (curStates[s] == RegisterMap.StEmpty && _snap.CarrierId[s] != "")
+                    _snap.CarrierId[s] = ReadStationId(s + 1);
+            _lastIdVerifyTick = Environment.TickCount64;
+        }
 
         // 3. 扫码握手：340=1 → 应答 340=0 → 投递异步命令（D3：不再阻塞轮询——
         // 命令执行/501/201/台账由命令工作线程完成，poller 立即恢复轮询，消除 ≤10s 盲区）

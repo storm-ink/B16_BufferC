@@ -31,6 +31,7 @@ cfg = {
     "reconnectMaxBackoffMs": 30000,
     "historyRetentionRows": 2000,
     "debugReadChunkWords": 16,
+    "cmdWriteChunkWords": 16,
     "logFile": "bufferc.log",
     "logLevel": "info",
     "logRetentionDays": 7,

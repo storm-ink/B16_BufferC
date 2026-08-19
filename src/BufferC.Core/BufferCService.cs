@@ -469,6 +469,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
             Log("PLC", $"取走事件 CEID {ceid} 但站口无货（主表无载具）: PLC{plcIndex} 站口{st}", LogLevel.Warn);
             return;
         }
+        FindPoller(plcIndex)?.ClearSnapshotCarrier(st);   // 取走后即时清快照 ID（防旧 ID 残留状态视图/页面）
         var loc = _engine.Loc(plcIndex, st);
         if (removedId.Length > 0)
         {
@@ -481,11 +482,12 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
             Log("PLC", $"取走事件 CEID {ceid} 但载具未确认（入货流程未完整，不上报 MCS）: PLC{plcIndex} 站口{st}", LogLevel.Warn);
             Audit("CMD", $"取走事件 CEID {ceid} 但载具未确认（入货流程未完整，不上报 MCS）: PLC{plcIndex} 站口{st}");
         }
-        StartPlcClearTask(plcIndex, st);   // 两种情况都走标准清除流程清 PLC ID 区
+        StartPlcClearTask(plcIndex, st, ceid, removedId);   // 两种情况都走标准清除流程清 PLC ID 区
     }
 
-    /// <summary>标准清除流程（命令2）：清零 401~672 → 写命令码2 → 400 触发 → 回显；失败重试后仍失败 = WARN+审计，不置 9001</summary>
-    private void StartPlcClearTask(int plcIndex, int station)
+    /// <summary>标准清除流程（命令2）：清零 401~672 → 写命令码2 → 400 触发 → 回显；失败重试后仍失败 = WARN+审计，不置 9001。
+    /// 直执行不经命令队列（不重复报 202/203）；结果记入台账命令历史（命令类型=取走、来源按取走方式：202=MANUAL/203=AGV），与命令队列路径同口径。</summary>
+    private void StartPlcClearTask(int plcIndex, int station, ushort ceid, string removedId)
     {
         var poller = FindPoller(plcIndex);
         if (poller == null || !poller.IsConnected)
@@ -493,6 +495,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
             Log("PLC", $"取走清理跳过（PLC{plcIndex} 未连接）: 站口{station}", LogLevel.Warn);
             return;
         }
+        var source = ceid == 202 ? "MANUAL" : "AGV";
         _ = Task.Run(() =>
         {
             var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -500,12 +503,17 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
             {
                 bool ok = poller.Channel.Execute(station, RegisterMap.CmdClear, null);
                 sw.Stop();
+                // 台账留痕：最近一条命令历史改为「取走」（命令载具=取走时主表 ID、命令编号=末次 400 触发值）
+                _inv.RecordCommandDone(plcIndex, station, RegisterMap.CmdClear, removedId, source, poller.Channel.LastSeq, ok);
+                _inv.AddCommandHistory(DateTime.Now, source, plcIndex, station, "CarrierDataRemove", ok, sw.ElapsedMilliseconds, removedId);
+                _cmds.Add(new CmdEntry(DateTime.Now, source, station, "CarrierDataRemove", ok, sw.ElapsedMilliseconds, removedId));
                 if (ok)
                     Log("PLC", $"取走清理: PLC{plcIndex} 站口{station} ID 区已清除（{sw.ElapsedMilliseconds}ms）", LogLevel.Info);
                 else
                 {
                     Log("PLC", $"取走清理失败: PLC{plcIndex} 站口{station}（重试后仍失败；PLC 侧残留旧 ID 会被下次写入覆盖）", LogLevel.Warn);
                     Audit("CMD", $"取走清理失败: PLC{plcIndex} 站口{station}");
+                    RecordFailedCommand(source, "CarrierDataRemove", removedId, _engine.Loc(plcIndex, station));
                 }
             }
             catch (Exception e) { LogException("PLC", $"取走清理异常: PLC{plcIndex} 站口{station}", e, LogLevel.Warn); }

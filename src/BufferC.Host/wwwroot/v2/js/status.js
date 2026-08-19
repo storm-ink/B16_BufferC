@@ -201,7 +201,8 @@ function fillRegTables(p) {
 // 优先 125 字大段（Modbus 规范上限）；某段失败自动降级 16 字小片（轮询器读 ID 区的同尺寸，
 // 现场验证过可用——兼容真 PLC 帧长限制小于 125 的情况）
 async function regRead(plc, a, n) {
-  const r = await fetch(`/api/debug/regread?plc=${plc}&addr=${a}&count=${n}`);
+  // &t= 防浏览器缓存：同 URL 重复 GET 可能命中缓存导致「读到旧值」（2026-08-19 现场：PLC 已清区仍显示旧 ID）
+  const r = await fetch(`/api/debug/regread?plc=${plc}&addr=${a}&count=${n}&t=${Date.now()}`);
   if (!r.ok) return null;
   return (await r.json()).values;
 }
@@ -236,19 +237,26 @@ async function readIdRaw() {
   if (plc == null) return;
   const box = document.getElementById('regIdRaw');
   box.innerHTML = '<span class="stat-line">读取中…</span>';
+  const stCnt = document.querySelectorAll('#tbl-reg-id [data-hid]').length;   // 该机台逻辑站口数
   try {
     // 单次大段读（后端持锁连续分段，不被轮询插队）；真 PLC 帧长受限时自动降级 125→16 小片
     let vals = await regRead(plc, 50, 256);
     if (!vals) vals = await readRegBlocks(plc, 50, 256);
     const bo = document.getElementById('detByteOrder').textContent;
-    const stCnt = document.querySelectorAll('#tbl-reg-id [data-hid]').length;   // 该机台逻辑站口数
     for (let st = 1; st <= stCnt; st++) {
       const words = vals.slice((st - 1) * 16, st * 16);
       const td = document.querySelector(`#tbl-reg-id [data-hid="${st}"]`);
       if (td) td.innerHTML = `<div>${unpackAscii(words, bo) || '—'}</div><div class="mono">${words.map(hex4).join(' ')}</div>`;
     }
-    box.innerHTML = `<span class="ok-txt">已读 50~305（256 字）</span>`;
-  } catch (e) { box.innerHTML = `<span class="fail-txt">${e.message}</span>`; }
+    box.innerHTML = `<span class="ok-txt">已读 50~305（256 字）@ ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}</span>`;
+  } catch (e) {
+    // 读失败：清空 HEX 单元格——失败绝不静默保留旧值（旧值会被误读为「PLC 还有数据」）
+    for (let st = 1; st <= stCnt; st++) {
+      const td = document.querySelector(`#tbl-reg-id [data-hid="${st}"]`);
+      if (td) td.innerHTML = '—';
+    }
+    box.innerHTML = `<span class="fail-txt">${e.message}</span>`;
+  }
 }
 
 // 命令区 400~416 按需读取（写区：只读前 17 字，失败自动降级 16 字小片——真 PLC 长读会掉线，2026-08-19 现场口径）
@@ -265,7 +273,14 @@ async function readCmdRaw() {
       const td = document.querySelector(`#tbl-reg-cmd [data-r="${a}"]`);
       if (td) td.textContent = vals[a - 400];
     }
-    box.innerHTML = `<span class="ok-txt">已读 400~416（17 字）</span>`;
-  } catch (e) { box.innerHTML = `<span class="fail-txt">${e.message}</span>`; }
+    box.innerHTML = `<span class="ok-txt">已读 400~416（17 字）@ ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}</span>`;
+  } catch (e) {
+    // 读失败：清空命令区单元格——失败绝不静默保留旧值（与 ID 区同口径）
+    for (let a = 400; a <= 416; a++) {
+      const td = document.querySelector(`#tbl-reg-cmd [data-r="${a}"]`);
+      if (td) td.textContent = '—';
+    }
+    box.innerHTML = `<span class="fail-txt">${e.message}</span>`;
+  }
 }
 

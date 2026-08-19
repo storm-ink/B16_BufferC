@@ -88,6 +88,30 @@ public class ModbusStackTests
     }
 
     [Fact]
+    public void ChunkedFc16_Writes272Words_SmallChunks()
+    {
+        // 现场降级路径：maxWords=16（cmdWriteChunkWords 默认）→ 272 字命令区自动分 17 段（16×17）逐帧写入，每帧不超现场 PLC 承受上限
+        var plc = new PlcSim(index: 1, unitId: 1);
+        int port = plc.Start();
+        try
+        {
+            using var client = new ModbusTcpClient("127.0.0.1", port, 1, timeoutMs: 10000);
+            client.Connect();
+            var words = new ushort[RegisterMap.RegCmdAreaWords];
+            Array.Fill(words, (ushort)0x55);
+            client.WriteMultipleRegisters(RegisterMap.RegCmdStation, words, maxWords: 16);
+            Assert.Equal((ushort)0x55, plc.GetReg(401));     // 首
+            Assert.Equal((ushort)0x55, plc.GetReg(416));     // 第 1 段尾
+            Assert.Equal((ushort)0x55, plc.GetReg(417));     // 第 2 段首
+            Assert.Equal((ushort)0x55, plc.GetReg(672));     // 尾
+        }
+        finally
+        {
+            plc.Dispose();
+        }
+    }
+
+    [Fact]
     public void CommandChannel_ClearsStaleArea_BeforeTrigger()
     {
         // PLC 协议（现场确认）：400 新值才扫描 401 以上执行 → 发命令前整段清零 401~672，最后写 400 触发
@@ -212,7 +236,7 @@ public class ModbusStackTests
     [Fact]
     public void CommandChannel_TriggerWriteFails_RetryOnlyRewrites400()
     {
-        // 清零(3 段)+命令码全部成功、第 5 次写（400 触发）返回异常（PLC 未执行）→ 重试只重写 400 新编号
+        // 清零(按 cmdWriteChunkWords 分 N 段)+命令码全部成功、最后一次写（400 触发）返回异常（PLC 未执行）→ 重试只重写 400 新编号
         var plc = new PlcSim(index: 1, unitId: 1);
         int port = plc.Start();
         try
@@ -223,7 +247,9 @@ public class ModbusStackTests
             var app = new BufferCConfig { EchoTimeoutMs = 5000, EchoRetryCount = 1 };
             var ch = new CommandChannel(client, cfg, app);
 
-            plc.FailOnWriteNo = 5;    // 第 5 次写（CmdClear 序列的 400）返回异常 → 第 6 次（重试的 400）正常
+            // 写序列：清零 N 段（默认 16 字/帧 → 17 段）+ 站口命令码 + 400 触发 = 最后一次写
+            int clearWrites = (RegisterMap.RegCmdAreaWords + app.CmdWriteChunkWords - 1) / app.CmdWriteChunkWords;
+            plc.FailOnWriteNo = clearWrites + 2;    // 400 触发写返回异常 → 重试的 400 正常
             Assert.True(ch.Execute(3, RegisterMap.CmdClear, null));
             Assert.Equal(RegisterMap.CmdClear, plc.GetEchoStation(3));
             Assert.Equal("", plc.GetCarrierId(3));

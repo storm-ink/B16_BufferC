@@ -89,10 +89,10 @@ public sealed class ModbusTcpClient : IDisposable
             throw new ModbusException($"FC06 异常码 {resp[1]} @ {address}");
     }
 
-    public void WriteMultipleRegisters(ushort address, ushort[] values)
+    public void WriteMultipleRegisters(ushort address, ushort[] values, int maxWords = 123)
     {
-        // FC16 单帧上限 123 字（Modbus 规范，真 PLC 超限拒收）：自动分段逐帧发送；整段持锁一次连续写（与批量读同理）
-        const int maxWords = 123;
+        // FC16 单帧上限 123 字（Modbus 规范，真 PLC 超限拒收）：自动分段逐帧发送；整段持锁一次连续写（与批量读同理）。
+        // maxWords 可调小（现场 PLC 对 123 字长帧写无响应、16 字已验证）：命令区清零/写 ID 用小片降级（与读侧 DebugReadChunkWords 同策）
         lock (_ioLock)
         {
             for (int off = 0; off < values.Length; off += maxWords)
