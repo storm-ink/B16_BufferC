@@ -2,8 +2,8 @@
   "plcs": [
     {
       "index": 1,
-      "ip": "127.0.0.1",
-      "port": 5501,
+      "ip": "192.168.100.182",
+      "port": 5000,
       "unitId": 1,
       "byteOrder": "low",
       "timeoutMs": 3000,
@@ -13,90 +13,13 @@
     },
     {
       "index": 2,
-      "ip": "127.0.0.1",
-      "port": 5502,
+      "ip": "192.168.100.178",
+      "port": 5000,
       "unitId": 1,
       "byteOrder": "low",
       "timeoutMs": 3000,
       "lastSeq": 0,
       "name": "MAGV03B02",
-      "stations": 8
-    },
-    {
-      "index": 3,
-      "ip": "127.0.0.1",
-      "port": 5503,
-      "unitId": 1,
-      "byteOrder": "low",
-      "timeoutMs": 3000,
-      "lastSeq": 0,
-      "name": "MAGV03B03",
-      "stations": 16
-    },
-    {
-      "index": 4,
-      "ip": "127.0.0.1",
-      "port": 5504,
-      "unitId": 1,
-      "byteOrder": "low",
-      "timeoutMs": 3000,
-      "lastSeq": 0,
-      "name": "MAGV03B04",
-      "stations": 8
-    },
-    {
-      "index": 5,
-      "ip": "127.0.0.1",
-      "port": 5505,
-      "unitId": 1,
-      "byteOrder": "low",
-      "timeoutMs": 3000,
-      "lastSeq": 0,
-      "name": "MAGV03B05",
-      "stations": 8
-    },
-    {
-      "index": 6,
-      "ip": "127.0.0.1",
-      "port": 5506,
-      "unitId": 1,
-      "byteOrder": "low",
-      "timeoutMs": 3000,
-      "lastSeq": 0,
-      "name": "MAGV03B06",
-      "stations": 8
-    },
-    {
-      "index": 7,
-      "ip": "127.0.0.1",
-      "port": 5507,
-      "unitId": 1,
-      "byteOrder": "low",
-      "timeoutMs": 3000,
-      "lastSeq": 0,
-      "name": "MAGV03B07",
-      "stations": 8
-    },
-    {
-      "index": 8,
-      "ip": "127.0.0.1",
-      "port": 5508,
-      "unitId": 1,
-      "byteOrder": "low",
-      "timeoutMs": 3000,
-      "lastSeq": 0,
-      "name": "MAGV03B08",
-      "stations": 8
-    },
-    {
-      "index": 9,
-      "ip": "127.0.0.1",
-      "port": 5509,
-      "unitId": 1,
-      "byteOrder": "low",
-      "timeoutMs": 3000,
-      "lastSeq": 0,
-      "name": "MAGV03B09",
       "stations": 8
     }
   ],
@@ -121,6 +44,7 @@
   "reconnectMaxBackoffMs": 30000,
   "historyRetentionRows": 2000,
   "debugReadChunkWords": 16,
+  "cmdWriteChunkWords": 16,
   "logFile": "bufferc.log",
   "logLevel": "debug",
   "logRetentionDays": 7,
