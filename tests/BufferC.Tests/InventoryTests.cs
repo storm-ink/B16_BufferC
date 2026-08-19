@@ -123,6 +123,56 @@ public class InventoryTests
     }
 
     [Fact]
+    public void MarkPlcOffline_SetsAllAvail1_Idempotent_Isolated_Persistent()
+    {
+        // 断线/启动核对（2026-08-19 用户口径）：只写在服/停服列，变化才写、幂等、多 PLC 隔离、SQLite 持久化
+        var db = TempDb();
+        try
+        {
+            var inv = new Inventory(db, 2);                     // 2 台 × 16 站
+            inv.UpdateUnit(1, 5, 1);                            // 1:5 先停服
+            int n = inv.MarkPlcOffline(1);
+            Assert.Equal(15, n);                                // 批量：只写 15 个变化行
+            Assert.All(inv.Ledger.Where(r => r.PlcIndex == 1), r => Assert.Equal(1, r.Avail));
+            Assert.All(inv.Ledger.Where(r => r.PlcIndex == 2), r => Assert.Equal(0, r.Avail));   // 多 PLC 隔离
+            var t1 = inv.Ledger.Single(r => r.PlcIndex == 1 && r.Station == 1).UpdatedAt;
+            Assert.NotEqual("", t1);                            // 变化行刷时间
+            Assert.Equal(0, inv.MarkPlcOffline(1));             // 幂等：二次 0 变化
+            Assert.Equal(t1, inv.Ledger.Single(r => r.PlcIndex == 1 && r.Station == 1).UpdatedAt);   // 不刷时间
+            inv.UpdateStationState(1, 1, 0, 0, 0, "");          // 重连自愈路径：快照实况写回
+            Assert.Equal(0, inv.Ledger.Single(r => r.PlcIndex == 1 && r.Station == 1).Avail);
+            Assert.Equal(2, inv.Units.Single(u => u.UnitId == "BUFFER01_01").State);   // SVID29 口径 2=在服
+            inv.Dispose();                                      // 持久化：重启恢复仍是停服
+            SqliteConnection.ClearAllPools();
+            var inv2 = new Inventory(db, 2);
+            Assert.Equal(1, inv2.Ledger.Single(r => r.PlcIndex == 1 && r.Station == 2).Avail);
+            Assert.Equal(0, inv2.Ledger.Single(r => r.PlcIndex == 2 && r.Station == 1).Avail);
+            inv2.Dispose();
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (File.Exists(db)) File.Delete(db);
+        }
+    }
+
+    [Fact]
+    public void MarkPlcOffline_TouchesOnlyAvailColumn()
+    {
+        // 用户口径 1 的直接编码：只动在服/停服，不动状态/载具/中间态（按真实流程顺序：先登记中间态、后 ID 就绪）
+        var inv = new Inventory(null, 1);
+        inv.MarkCarrierPending(1, 2, 204);
+        inv.SetCarrier(1, 2, "C001", "BUFFER01_02", "AGV");
+        inv.MarkPlcOffline(1);
+        var row = inv.Ledger.Single(r => r.Station == 2);
+        Assert.Equal(1, row.Avail);
+        Assert.Equal(RegisterMap.StHasCarrier, row.State);
+        Assert.Equal("C001", row.CarrierId);
+        Assert.Equal(1, row.CarrierConfirmed);
+        Assert.Equal(204, row.PendingCeid);
+    }
+
+    [Fact]
     public void Alarms_SetClear_DeleteOnClear()
     {
         var inv = new Inventory(null, 1);

@@ -10,6 +10,7 @@ public interface IEventSink
     void SyncSnapshot(PlcSnapshot snap);   // 每轮轮询后落表（站口主表：状态/告警/可用/ID 兜底）
     void Log(string category, string msg, LogLevel level = LogLevel.Info);
     void EnqueueScan(int plcIndex, int station, string scanCode);   // 扫码握手命令投递（D3：poller 不阻塞，异步命令路径执行）
+    void OnPlcDisconnected(int plcIndex);   // 断线回调（BufferCService：该机台台账置停服；底层变化才写，重复回调静默）
 }
 
 /// <summary>
@@ -115,6 +116,7 @@ public sealed class PlcPoller
                 _client.Disconnect();
                 _prevStates = null;                       // 重连后重新基线（含事件引擎，不补报）
                 _engine.Reset(_cfg.Index);
+                _sink.OnPlcDisconnected(_cfg.Index);      // 断线核对：台账置停服（幂等，重复 catch 静默）
                 try { await Task.Delay(backoffMs, ct); } catch (OperationCanceledException) { break; }
                 backoffMs = Math.Min(backoffMs * 2, _app.ReconnectMaxBackoffMs);
             }

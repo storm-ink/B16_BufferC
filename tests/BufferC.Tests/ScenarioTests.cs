@@ -155,6 +155,12 @@ public sealed class ScenarioTests : IAsyncLifetime
         _plc.SetCarrierId(4, "CARRIER004");
         _plc.DropConnection();                         // 断线注入
         _plc.SetStationState(4, 1);                    // 断线期间发生变化（重连后仅状态同步，不补报）
+        // 断线核对（2026-08-19 新口径）：未连接机台站口在台账必须停服（DB 直写，不产生 301/302）
+        var offDeadline = Environment.TickCount64 + 5000;
+        while (Environment.TickCount64 < offDeadline
+            && _svc.GetInventoryView().Single(r => r.Station == 4).Avail != 1)
+            await Task.Delay(50);
+        Assert.Equal(1, _svc.GetInventoryView().Single(r => r.Station == 4).Avail);
         // 条件等重连 + 状态同步（替代 2500ms 固定等）：重连可观测（ClientCount），状态同步以状态视图收敛为准
         var deadline = Environment.TickCount64 + 10000;
         while (_plc.ClientCount == 0 && Environment.TickCount64 < deadline) await Task.Delay(100);
@@ -165,11 +171,65 @@ public sealed class ScenarioTests : IAsyncLifetime
             if (st4.State == 1) break;
             await Task.Delay(100);
         }
+        // 重连自愈：首轮快照按 34~49 实况(0)恢复在服
+        var onDeadline = Environment.TickCount64 + 10000;
+        while (Environment.TickCount64 < onDeadline
+            && _svc.GetInventoryView().Single(r => r.Station == 4).Avail != 0)
+            await Task.Delay(100);
+        Assert.Equal(0, _svc.GetInventoryView().Single(r => r.Station == 4).Avail);
+        Assert.Equal(0, await _mcs.WaitForEventCountAsync(302, 1, 500));   // 置停服是 DB 直写，不产生 302
         var ev = await _mcs.WaitForEventAsync(204, 1000);
         Assert.Null(ev);                               // 断线期间的事件不补报
         // 载具确认机制：快照兜底已移除（ID 只经扫码/AGVC/命令/补填）→ SVID15 不含；等 ID 的注册不跨重连补登
         var carriers = (await _mcs.QuerySvidAsync(15))[0].Children!;
         Assert.Empty(carriers);
+    }
+
+    [Fact]
+    public async Task Scenario07b_StartupPlcUnreachable_LedgerOutOfService_RecoversOnConnect()
+    {
+        // 启动时 PLC 不可达 → 台账/SVID29 必须全停服（Start() 内同步核对，HSMS 监听前完成）；
+        // PLC 上线后按 34~49 实况自动恢复在服（DB 直写不产生 301/302）
+        int port;
+        using (var tmp = new PlcSim(1)) port = tmp.Start();    // 取端口后停服（从未建连，可安全重绑）
+        var db = Path.Combine(Path.GetTempPath(), $"bufferc-startdown-{Guid.NewGuid():N}.db");
+        var cfg = new BufferCConfig
+        {
+            Plcs = { new PlcConfig { Index = 1, Ip = "127.0.0.1", Port = port, UnitId = 1, ByteOrder = "high" } },
+            Hsms = new HsmsConfig { ListenPort = 5140 },
+            PollIntervalMs = 100,
+            ReconnectMaxBackoffMs = 2000,
+            DbPath = db,
+            LogFile = "test-bufferc.log",
+        };
+        var svc = new BufferCService(cfg);
+        svc.Start();                                           // Start() 内同步全量置停服 → 返回即生效
+        try
+        {
+            Assert.All(svc.GetInventoryView(), r => Assert.Equal("停服", r.UnitStateLabel));   // 无需等轮询
+            var mcs = new McsSim();
+            mcs.Connect("127.0.0.1", 5140);
+            await mcs.EstablishAsync();
+            var units = (await mcs.QuerySvidAsync(29))[0].Children!;
+            Assert.All(units, u => Assert.Equal(1u, u.Children![1].AsUInt()));                 // SVID29 全 1=停服
+
+            using var plc = new PlcSim(1);
+            plc.Start(IPAddress.Loopback, port);               // 同端口重新上线（34~49 默认 0=在服）
+            var deadline = Environment.TickCount64 + 15000;
+            while (!svc.AllPlcsReady && Environment.TickCount64 < deadline) await Task.Delay(100);
+            deadline = Environment.TickCount64 + 10000;
+            while (Environment.TickCount64 < deadline && svc.GetInventoryView().Any(r => r.Avail != 0))
+                await Task.Delay(100);
+            Assert.All(svc.GetInventoryView(), r => Assert.Equal("在服", r.UnitStateLabel));   // 重连自愈
+            Assert.Equal(0, await mcs.WaitForEventCountAsync(301, 1, 500));                    // DB 直写不产生事件
+            mcs.Dispose();
+        }
+        finally
+        {
+            svc.Dispose();
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            if (File.Exists(db)) File.Delete(db);
+        }
     }
 
     [Fact]

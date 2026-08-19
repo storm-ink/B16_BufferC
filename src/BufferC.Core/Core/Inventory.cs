@@ -260,6 +260,28 @@ public sealed class Inventory : IDisposable
         }
     }
 
+    /// <summary>PLC 断线/启动核对：该机台全部站口置停服（avail=1）——只动在服/停服列，不碰状态/载具/中间态；
+    /// 变化才写（天然幂等），返回实际改动行数（调用方据此决定是否记日志，避免退避重试期刷屏）。
+    /// 恢复无需代码：重连首轮快照 SyncSnapshot 用 34~49 寄存器真实值写回。</summary>
+    public int MarkPlcOffline(int plcIndex)
+    {
+        int changed = 0;
+        lock (_lock)
+        {
+            foreach (var row in _stations.Values.Where(r => r.PlcIndex == plcIndex))
+            {
+                if (row.Avail == 1) continue;               // 已停服：不动（UpdatedAt 不刷）
+                var key = Key(row.PlcIndex, row.Station);
+                var time = Now();
+                _stations[key] = row with { Avail = 1, UpdatedAt = time };
+                Exec("UPDATE stations SET avail=1, updated_at=$t WHERE station_key=$k",
+                     ("$t", time), ("$k", key));
+                changed++;
+            }
+        }
+        return changed;
+    }
+
     public bool FindCarrier(string carrierId, out int plcIndex, out int station)
     {
         plcIndex = 0; station = 0;

@@ -65,6 +65,16 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
         var now = Clock();
         CleanupOldLogs(_cfg.LogFile, now);
         if (!string.IsNullOrWhiteSpace(_cfg.AuditFile)) CleanupOldLogs(_cfg.AuditFile!, now);
+        // 启动核对（2026-08-19 用户口径）：PLC 尚未连接 → 对应站口台账必须先置停服（只动在服/停服列），
+        // 数据库就绪后才允许 HSMS 与 MCS 上线通信；重连/首轮快照按 34~49 寄存器实况自愈恢复。
+        int offlined = 0;
+        foreach (var plc in _cfg.Plcs)
+            offlined += _inv.MarkPlcOffline(plc.Index);
+        if (offlined > 0)
+        {
+            Log("SVC", $"启动核对: {offlined} 个站口置停服（PLC 未连接；连接后按 34~49 寄存器实况恢复）", LogLevel.Info);
+            Audit("SVC", $"启动核对: {offlined} 个站口置停服（PLC 未连接）");
+        }
         _hsms = new HsmsServer(_cfg.Hsms, this);
         _hsms.Log += (c, m, lv) => Log(c, m, lv);
         _hsms.Audit += (c, m) => Audit(c, m);
@@ -330,6 +340,18 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
             _inv.ClearCarrierPending(r.PlcIndex, r.Station, "");
             Log("PLC", $"载具事件 CEID {r.PendingCeid} 撤销（流程中断，状态离开有货态）: PLC{r.PlcIndex} 站口{r.Station}", LogLevel.Warn);
             Audit("CMD", $"载具事件 CEID {r.PendingCeid} 撤销（流程中断）: PLC{r.PlcIndex} 站口{r.Station}");
+        }
+    }
+
+    /// <summary>PLC 断线（PlcPoller catch 回调，轮询线程）：该机台全部站口台账置停服。
+    /// 变化才写 → 同一断线 streak 的重复回调返回 0 静默；恢复由重连首轮 SyncSnapshot 完成，不发 301/302。</summary>
+    public void OnPlcDisconnected(int plcIndex)
+    {
+        int n = _inv.MarkPlcOffline(plcIndex);
+        if (n > 0)
+        {
+            Log("PLC", $"PLC{plcIndex} 断线: {n} 个站口置停服（重连后按 34~49 实况恢复）", LogLevel.Info);
+            Audit("PLC", $"PLC{plcIndex} 断线: {n} 个站口置停服");
         }
     }
 
