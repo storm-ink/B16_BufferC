@@ -4,13 +4,12 @@
 // ---------- AGVC 联调页（手动触发 + 发送记录） ----------
 async function agvManualQuery() {
   const cmsIndex = document.getElementById('agvqCms').value.trim();
-  const reqCode = document.getElementById('agvqReq').value.trim();   // 留空=后端自动生成（时间戳+随机，Q6 现场要求）
   const el = document.getElementById('agvqResult');
   if (!cmsIndex) { el.innerHTML = '<span class="fail-txt">请填 cmsIndex</span>'; return; }
   el.textContent = '发送中…';
   try {
     const r = await fetch('/api/agvc/manual/queryMachines', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cmsIndex, reqCode }) });
+      body: JSON.stringify({ cmsIndex }) });
     const j = await r.json();
     el.innerHTML = j.ok ? `<span class="ok-txt">OK</span> ${esc(j.message)}` : `<span class="fail-txt">FAIL</span> ${esc(j.message)}`;
     loadAgvcTraffic();

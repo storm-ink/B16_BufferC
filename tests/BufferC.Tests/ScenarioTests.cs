@@ -96,6 +96,28 @@ public sealed class ScenarioTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Scenario03b_EchoSnapshot_LogicalOrder()
+    {
+        // 回显快照=逻辑索引（与状态/告警/可用同口径）：逻辑站 3=物理槽 5（地址 311）回显须落 EchoStation[2]，
+        // 而非物理序拷贝的 EchoStation[4]——2026-08-20 修复 PlcPoller 307~322 遗漏 StationMap 换算（页面 308/309 错位）
+        var hcack = await _mcs.SendS2F41Async("CarrierDataInstall",
+            ("CARRIERID", "CARRIER003"), ("CARRIERLOC", "BUFFER01_P3"));
+        Assert.Equal(4, hcack);
+        var ev = await _mcs.WaitForEventAsync(201);
+        Assert.NotNull(ev);
+        var deadline = Environment.TickCount64 + 5000;
+        ushort[] echo = Array.Empty<ushort>();
+        while (Environment.TickCount64 < deadline)
+        {
+            echo = _svc.GetStatusView().Plcs[0].Registers.EchoStation;
+            if (echo[2] == RegisterMap.CmdWrite) break;
+            await Task.Delay(50);
+        }
+        Assert.Equal(RegisterMap.CmdWrite, echo[2]);   // 逻辑 3 → 物理 5 → 311
+        Assert.Equal((ushort)0, echo[4]);              // 逻辑 5=物理 9 无命令——证明确已换算而非物理序拷贝
+    }
+
+    [Fact]
     public async Task Scenario04_S2F41_Pause_Accepted_HCACK0()
     {
         // OFFLINE→ONLINE 流程内 MCS 会发 PAUSE/RESUME：回 HCACK=0 确认接受（现场 2026-08-15）

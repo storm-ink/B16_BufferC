@@ -42,12 +42,12 @@ public sealed class AgvcClient : IDisposable
     /// 查询指定 cmsIndex 站口的货物 ID：code=="0" 且 data[0].carrierId 非空 → 返回 ID；
     /// 无结果/中断/传输失败按 RetryCount 重试（间隔 RetryIntervalMs），仅日志；
     /// 最终失败返回 null（该站口保持无 ID，现场人工在 Web 补）。
-    /// reqCode 缺省自动生成（时间戳+随机 ≤32 每次唯一——现场要求 2026-08-17，Q6）。
+    /// 请求体只报 cmsIndex（2026-08-20 现场要求 queryMachines 不报 reqCode；push 仍保留 reqCode）。
     /// </summary>
-    public async Task<string?> QueryCarrierIdAsync(int plc, int station, CancellationToken ct, string? reqCode = null)
+    public async Task<string?> QueryCarrierIdAsync(int plc, int station, CancellationToken ct)
     {
         string cmsIndex = (plc * _cfg.CmsIndexBase + station).ToString();
-        var payload = JsonSerializer.Serialize(new { cmsIndex, reqCode = reqCode ?? NewReqCode() }, Camel);
+        var payload = JsonSerializer.Serialize(new { cmsIndex }, Camel);
 
         int attempts = 1 + _cfg.RetryCount;
         string lastResp = "";

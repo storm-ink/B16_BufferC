@@ -122,7 +122,7 @@ public sealed class AgvcConfig
     public string? BaseUrl { get; set; }                   // AGVC 服务器地址（空=出站调用禁用）
     public int TimeoutSec { get; set; } = 5;               // 出站 HTTP 超时
     public int RetryCount { get; set; } = 3;               // 首次失败后重试次数（总尝试 = 1+RetryCount）
-    public int RetryIntervalMs { get; set; } = 2000;       // 重试间隔
+    public int RetryIntervalMs { get; set; } = 3000;       // 重试间隔（2026-08-20 现场要求 3s）
     public int CmsIndexBase { get; set; } = 10000;         // cmsIndex = 机台号×base + 站口号（10001=1号机台1号站口）
     public int ArrivalGraceMs { get; set; } = 3000;        // 站口 2→1 后等扫码握手(340)的窗口；0=不等待
 }

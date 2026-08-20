@@ -33,7 +33,7 @@
     "baseUrl": "http://192.168.100.23:8282",
     "timeoutSec": 5,
     "retryCount": 3,
-    "retryIntervalMs": 2000,
+    "retryIntervalMs": 3000,
     "cmsIndexBase": 10000,
     "arrivalGraceMs": 3000
   },

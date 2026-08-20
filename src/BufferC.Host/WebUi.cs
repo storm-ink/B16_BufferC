@@ -16,7 +16,7 @@ public sealed record DebugLevelReq(string Level);
 public sealed record DebugCmdReq(int Plc, int Station, ushort Cmd, string? CarrierId);
 public sealed record DebugRegWrite(int Plc, int Addr, ushort[] Values);
 public sealed record DebugCimReq(bool Online);
-public sealed record ManualQueryReq(string CmsIndex, string? ReqCode);
+public sealed record ManualQueryReq(string CmsIndex);
 public sealed record PendingFillReq(int Plc, int Station, string CarrierId);
 public sealed record ManualPushReq(string CmsIndex, string? Service, string? Present, string? TrayId);
 
@@ -56,7 +56,7 @@ public static class WebUi
         // 08-14 续 9 踩的「Headers are read-only」只在 await 后改 StatusCode 时才触发，此写法安全）
         app.MapPost("/api/agvc/manual/queryMachines", async Task<IResult> (ManualQueryReq req) =>
         {
-            var (ok, msg) = await service.ManualQueryMachines(req.CmsIndex, req.ReqCode);
+            var (ok, msg) = await service.ManualQueryMachines(req.CmsIndex);
             return Results.Json(new { ok, message = msg });
         });
         app.MapPost("/api/agvc/manual/pushDeviceStatusInfo", async Task<IResult> (ManualPushReq req) =>

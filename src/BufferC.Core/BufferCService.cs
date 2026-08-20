@@ -910,13 +910,13 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
             ?? _inv.Carriers.FirstOrDefault(c => c.CarrierLoc == _engine.Loc(plcIndex, station))?.CarrierId
             ?? FindPoller(plcIndex)?.Snapshot?.CarrierId[station - 1] ?? "";
 
-    /// <summary>手动触发 queryMachines（AGVC 联调页）：与自动路径一致——查询 ID → 写 PLC + 台账 + 201；reqCode 缺省自动生成（Q6，现场要求）</summary>
-    public async Task<(bool Ok, string Message)> ManualQueryMachines(string cmsIndex, string? reqCode = null)
+    /// <summary>手动触发 queryMachines（AGVC 联调页）：与自动路径一致——查询 ID → 写 PLC + 台账 + 201（2026-08-20 现场要求：queryMachines 不报 reqCode）</summary>
+    public async Task<(bool Ok, string Message)> ManualQueryMachines(string cmsIndex)
     {
         if (_agvc == null) return (false, "agvc.baseUrl 未配置，出站禁用");
         if (!TryParseCmsIndex(cmsIndex, out int plc, out int st)) return (false, $"cmsIndex 无效: {cmsIndex}");
         if (FindPoller(plc) == null) return (false, $"PLC{plc} 未配置");
-        var carrierId = await _agvc.QueryCarrierIdAsync(plc, st, _cts.Token, reqCode);
+        var carrierId = await _agvc.QueryCarrierIdAsync(plc, st, _cts.Token);
         if (string.IsNullOrWhiteSpace(carrierId)) return (false, $"查询无结果（{cmsIndex}）——详见下方发送记录");
         bool ok = ManualInstall(carrierId, cmsIndex, "AGVC");
         return ok ? (true, $"已获取货物 ID \"{carrierId}\" 并写入 PLC") : (false, $"货物 ID \"{carrierId}\" 写 PLC 失败");

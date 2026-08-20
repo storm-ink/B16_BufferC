@@ -5,6 +5,7 @@ obj/
 # 发布产物（联调/部署包不入库，按需单独分发）
 publish/
 *.tgz
+bufferc-deploy-*.zip
 
 # 运行数据
 *.db

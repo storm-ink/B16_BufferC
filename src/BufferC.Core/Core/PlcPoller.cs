@@ -156,7 +156,10 @@ public sealed class PlcPoller
             _snap.StationAvail[l - 1] = baseRegs[RegisterMap.RegStationAvail + p - 1];
         }
         _snap.EchoNo = fastRegs[0];
-        Array.Copy(fastRegs, 1, _snap.EchoStation, 0, 16);
+        // 回显区 307~322 寄存器=物理槽位 → 快照数组=逻辑索引（与状态/告警/可用同口径；8 站机台 9~16 槽不映射，清零防陈旧残留）
+        for (int l = 1; l <= _snap.StationCount; l++)
+            _snap.EchoStation[l - 1] = fastRegs[StationMap.PhysicalOf(l, _snap.StationCount)];
+        Array.Clear(_snap.EchoStation, _snap.StationCount, _snap.EchoStation.Length - _snap.StationCount);
         _snap.ScanStation = fastRegs[RegisterMap.RegScanStation - RegisterMap.RegEchoNo];
         _snap.ScanCode = RegisterMap.UnpackAscii(fastRegs[(RegisterMap.RegScanCode - RegisterMap.RegEchoNo)..(RegisterMap.RegScanCode - RegisterMap.RegEchoNo + 16)], _cfg.ByteOrder);
         _snap.Handshake = fastRegs[RegisterMap.RegHandshake - RegisterMap.RegEchoNo];

@@ -3,7 +3,7 @@
     { "index": 1, "ip": "127.0.0.1", "port": 5501, "unitId": 1, "byteOrder": "high", "timeoutMs": 3000, "lastSeq": 0, "name": "MAGV03B01", "stations": 16 }
   ],
   "hsms": { "listenPort": 5000, "mdln": "BUFFERC", "softRev": "0.1.0", "t3Ms": 45000, "unitLimit": 4 },
-  "agvc": { "baseUrl": "http://192.168.100.23:8282", "timeoutSec": 5, "retryCount": 3, "retryIntervalMs": 2000, "cmsIndexBase": 10000, "arrivalGraceMs": 3000 },
+  "agvc": { "baseUrl": "http://192.168.100.23:8282", "timeoutSec": 5, "retryCount": 3, "retryIntervalMs": 3000, "cmsIndexBase": 10000, "arrivalGraceMs": 3000 },
   "pollIntervalMs": 500,
   "echoTimeoutMs": 5000,
   "echoRetryCount": 1,
