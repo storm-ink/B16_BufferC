@@ -86,7 +86,7 @@ public sealed class ScenarioTests : IAsyncLifetime
     public async Task Scenario03_S2F41_CarrierDataInstall()
     {
         var hcack = await _mcs.SendS2F41Async("CarrierDataInstall",
-            ("CARRIERID", "CARRIER002"), ("CARRIERLOC", "Buffer1_Port5"));
+            ("CARRIERID", "CARRIER002"), ("CARRIERLOC", "BUFFER01_P5"));
         Assert.Equal(4, hcack);                      // 确认将执行
         var ev = await _mcs.WaitForEventAsync(201);
         Assert.NotNull(ev);
@@ -314,7 +314,7 @@ public sealed class ScenarioTests : IAsyncLifetime
     {
         // 1.2.6：InventoryDataSend 对账——以 MCS 列表更新台账，回 HCACK=4，不产生事件
         var hcack = await _mcs.SendS2F41Async("InventoryDataSend",
-            ("CARRIERID", "INV001"), ("CARRIERLOC", "Buffer1_Port1"));
+            ("CARRIERID", "INV001"), ("CARRIERLOC", "BUFFER01_P1"));
         Assert.Equal(4, hcack);
         var ev = await _mcs.WaitForEventAsync(201, 1000);
         Assert.Null(ev);
@@ -548,7 +548,7 @@ public sealed class ScenarioTests : IAsyncLifetime
     public async Task Scenario18_CarrierDataRemove()
     {
         var hcack = await _mcs.SendS2F41Async("CarrierDataInstall",
-            ("CARRIERID", "CARRIER003"), ("CARRIERLOC", "Buffer1_Port3"));
+            ("CARRIERID", "CARRIER003"), ("CARRIERLOC", "BUFFER01_P3"));
         Assert.Equal(4, hcack);
         Assert.NotNull(await _mcs.WaitForEventAsync(201));
         Assert.Equal("CARRIER003", _plc.GetCarrierId(3));
@@ -674,7 +674,7 @@ public sealed class ScenarioTests : IAsyncLifetime
             mcs.Connect("127.0.0.1", 5004);
             await mcs.EstablishAsync();
             var resp = await http.PostAsJsonAsync("/api/command",
-                new { cmd = "install", carrierId = "WEB001", carrierLoc = "Buffer1_Port7" });
+                new { cmd = "install", carrierId = "WEB001", carrierLoc = "BUFFER01_P7" });
             Assert.True(resp.IsSuccessStatusCode);
             Assert.NotNull(await mcs.WaitForEventAsync(201));
 
@@ -718,7 +718,7 @@ public sealed class ScenarioTests : IAsyncLifetime
 
             // 手动安装 → 命令路径 → 201 + PLC 写入
             var resp = await http.PostAsJsonAsync("/api/command",
-                new { cmd = "install", carrierId = "AGV001", carrierLoc = "Buffer1_Port9" });
+                new { cmd = "install", carrierId = "AGV001", carrierLoc = "BUFFER01_P9" });
             Assert.True(resp.IsSuccessStatusCode);
             Assert.NotNull(await mcs.WaitForEventAsync(201));
             Assert.Equal("AGV001", _plc.GetCarrierId(9));
@@ -726,7 +726,7 @@ public sealed class ScenarioTests : IAsyncLifetime
             // 命令失败 → 悬空记录（C1）出现在 /api/commands，来源 MANUAL（异步执行：回显挂起 → 超时+重试约 10s）
             _plc.CommandHang = true;
             await http.PostAsJsonAsync("/api/command",
-                new { cmd = "install", carrierId = "AGV002", carrierLoc = "Buffer1_Port10" });
+                new { cmd = "install", carrierId = "AGV002", carrierLoc = "BUFFER01_P10" });
             var cmdDeadline = Environment.TickCount64 + 15000;
             string cmds = "";
             while (Environment.TickCount64 < cmdDeadline)
@@ -801,7 +801,7 @@ public sealed class ScenarioTests : IAsyncLifetime
 
             // 3) 命令历史 + 告警历史
             await http.PostAsJsonAsync("/api/command",
-                new { cmd = "install", carrierId = "INFO002", carrierLoc = "Buffer1_Port4" });
+                new { cmd = "install", carrierId = "INFO002", carrierLoc = "BUFFER01_P4" });
             Assert.NotNull(await mcs.WaitForEventAsync(201));
             var cmds = await http.GetStringAsync("/api/commands");
             Assert.Contains("INFO002", cmds);
@@ -950,7 +950,7 @@ public sealed class ScenarioTests : IAsyncLifetime
             while (!svc.AllPlcsReady && Environment.TickCount64 < ready) await Task.Delay(100);
 
             var r = await http.PostAsJsonAsync("/api/command",
-                new { cmd = "install", carrierId = "LAT001", carrierLoc = "Buffer1_Port5" });
+                new { cmd = "install", carrierId = "LAT001", carrierLoc = "BUFFER01_P5" });
             Assert.True(r.IsSuccessStatusCode);
 
             var deadline = Environment.TickCount64 + 15000;
@@ -995,7 +995,7 @@ public sealed class ScenarioTests : IAsyncLifetime
 
             _plc.DropConnection();                       // PLC 断线（重连退避 1s，命令在窗口内发出）
             await Task.Delay(300);
-            var hc = await mcs.SendS2F41Async("CarrierDataInstall", ("CARRIERID", "DOWN001"), ("CARRIERLOC", "Buffer1_Port6"));
+            var hc = await mcs.SendS2F41Async("CarrierDataInstall", ("CARRIERID", "DOWN001"), ("CARRIERLOC", "BUFFER01_P6"));
             Assert.Equal((byte)4, hc);                   // HCACK=4 异步执行确认（设计行为）
 
             // 异步命令：断线保持待执行，重连后自动执行成功 → 201；HSMS 连接全程可用（查询成功 = 未崩）
@@ -1057,9 +1057,9 @@ public sealed class ScenarioTests : IAsyncLifetime
             Assert.True(r3.IsSuccessStatusCode);
             Assert.Equal((ushort)9, _plc.GetEchoStation(6));
 
-            // 手动命令位置格式放宽：取前两个数字（"1号Buffer_6号站口" == Buffer1_Port6）；异步执行轮询等待
+            // 手动命令位置：新格式 设备名_P站口号（2026-08-20 起旧宽松格式已废弃）；异步执行轮询等待
             var r4 = await http.PostAsJsonAsync("/api/command",
-                new { cmd = "install", carrierId = "LOOSE1", carrierLoc = "1号Buffer_6号站口" });
+                new { cmd = "install", carrierId = "LOOSE1", carrierLoc = "BUFFER01_P06" });
             Assert.True(r4.IsSuccessStatusCode);
             var looseDeadline = Environment.TickCount64 + 8000;
             while (Environment.TickCount64 < looseDeadline && _plc.GetCarrierId(6) != "LOOSE1")
@@ -1081,8 +1081,8 @@ public sealed class ScenarioTests : IAsyncLifetime
             var bad3resp = await http.GetAsync("/api/debug/regread?plc=99&addr=0&count=10");
             Assert.False(bad3resp.IsSuccessStatusCode);
             var bad4 = await http.PostAsJsonAsync("/api/command",
-                new { cmd = "install", carrierId = "X", carrierLoc = "Buffer1_Port17" });
-            Assert.False(bad4.IsSuccessStatusCode);                 // 站口越界
+                new { cmd = "install", carrierId = "X", carrierLoc = "BUFFER01_P17" });
+            Assert.False(bad4.IsSuccessStatusCode);                 // 站口越界（逻辑站上限 16）
             var bad5 = await http.PostAsJsonAsync("/api/command",
                 new { cmd = "install", carrierId = "X", carrierLoc = "1号Buffer" });
             Assert.False(bad5.IsSuccessStatusCode);                 // 只有一个数字无法定位站口

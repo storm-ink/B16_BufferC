@@ -50,7 +50,7 @@ public sealed class CommandTimeoutTests : IAsyncLifetime
     {
         _plc.CommandHang = true;                            // PLC 挂起：不回显
         var hcack = await _mcs.SendS2F41Async("CarrierDataInstall",
-            ("CARRIERID", "T001"), ("CARRIERLOC", "Buffer1_Port3"));
+            ("CARRIERID", "T001"), ("CARRIERLOC", "BUFFER01_P3"));
         Assert.Equal(4, hcack);                             // HCACK=4 已确认（异步完成语义）
         var ev = await _mcs.WaitForEventAsync(201, 2000);
         Assert.Null(ev);                                    // 超时+重试失败 → 无 201 上报
@@ -58,7 +58,7 @@ public sealed class CommandTimeoutTests : IAsyncLifetime
 
         _plc.CommandHang = false;                           // 恢复
         var hcack2 = await _mcs.SendS2F41Async("CarrierDataInstall",
-            ("CARRIERID", "T002"), ("CARRIERLOC", "Buffer1_Port3"));
+            ("CARRIERID", "T002"), ("CARRIERLOC", "BUFFER01_P3"));
         Assert.Equal(4, hcack2);
         var ev2 = await _mcs.WaitForEventAsync(201, 3000);
         Assert.NotNull(ev2);                                // 恢复后正常上报
@@ -70,7 +70,7 @@ public sealed class CommandTimeoutTests : IAsyncLifetime
         // 执行快、回显 2500ms 后才写：两次 500ms 等待都超时 → 命令失败，无 201
         _plc.EchoDelayMs = 2500;
         var hcack = await _mcs.SendS2F41Async("CarrierDataInstall",
-            ("CARRIERID", "D001"), ("CARRIERLOC", "Buffer1_Port3"));
+            ("CARRIERID", "D001"), ("CARRIERLOC", "BUFFER01_P3"));
         Assert.Equal(4, hcack);
         var ev = await _mcs.WaitForEventAsync(201, 2000);
         Assert.Null(ev);                                    // 无 201 上报
@@ -82,7 +82,7 @@ public sealed class CommandTimeoutTests : IAsyncLifetime
     {
         _plc.EchoDelayMs = 200;                             // 回显 200ms 后到，在 500ms 超时内 → 成功
         var hcack = await _mcs.SendS2F41Async("CarrierDataInstall",
-            ("CARRIERID", "D002"), ("CARRIERLOC", "Buffer1_Port3"));
+            ("CARRIERID", "D002"), ("CARRIERLOC", "BUFFER01_P3"));
         Assert.Equal(4, hcack);
         Assert.NotNull(await _mcs.WaitForEventAsync(201, 3000));
         Assert.Equal("D002", _plc.GetCarrierId(3));
@@ -95,7 +95,7 @@ public sealed class CommandTimeoutTests : IAsyncLifetime
         // 命令失败（C1 补偿）：HCACK=4 已确认 → 失败 → S5F1 内部告警 9001
         _plc.CommandHang = true;
         var hcack = await _mcs.SendS2F41Async("CarrierDataInstall",
-            ("CARRIERID", "T900"), ("CARRIERLOC", "Buffer1_Port3"));
+            ("CARRIERID", "T900"), ("CARRIERLOC", "BUFFER01_P3"));
         Assert.Equal(4, hcack);
         var ev = await _mcs.WaitForEventAsync(201, 2000);
         Assert.Null(ev);                                    // 无 201
@@ -112,7 +112,7 @@ public sealed class CommandTimeoutTests : IAsyncLifetime
         // 回显丢失：重试以新命令编号重新执行（写 ID 幂等）→ 成功并上报 201
         _plc.EchoDropCount = 1;
         var hcack = await _mcs.SendS2F41Async("CarrierDataInstall",
-            ("CARRIERID", "D003"), ("CARRIERLOC", "Buffer1_Port3"));
+            ("CARRIERID", "D003"), ("CARRIERLOC", "BUFFER01_P3"));
         Assert.Equal(4, hcack);
         Assert.NotNull(await _mcs.WaitForEventAsync(201, 3000));
         Assert.Equal("D003", _plc.GetCarrierId(3));         // PLC 存储区已写入

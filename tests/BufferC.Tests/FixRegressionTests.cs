@@ -136,8 +136,8 @@ public class FixRegressionTests
     [Fact]
     public async Task FieldNaming_DeviceNamePStation_AndStationCount()
     {
-        // 现场布局（2026-08-17）：MAGV03B01_P01 命名 + 8 站裁剪——9~16 寄存器变化不产生幻影事件；SVID29 只 8 个单位
-        var plc = new PlcSim(1);
+        // 现场布局（2026-08-17）：MAGV03B01_P01 命名 + 8 站裁剪——物理 9~16 槽寄存器变化不产生幻影事件（2026-08-20 映射：无逻辑对应）；SVID29 只 8 个单位
+        var plc = new PlcSim(1, stations: 8);   // 8 站机台：行为 API 参数=逻辑号，内部按 StationMap 换算物理槽
         var plcPort = plc.Start();
         var cfg = new BufferCConfig
         {
@@ -156,8 +156,8 @@ public class FixRegressionTests
             mcs.Connect("127.0.0.1", 5121);
             await mcs.EstablishAsync();
 
-            // 9 号站（超出 8 站裁剪）变化 → 无幻影事件
-            plc.SetStationState(9, 1);
+            // 物理槽 9 寄存器（状态 10 号地址，8 站机台无逻辑对应）变化 → 无幻影事件
+            plc.SetReg(RegisterMap.RegStationState + 8, 1);
             Assert.Equal(0, await mcs.WaitForEventCountAsync(204, 1, 1000));
 
             // 1 号站放入 → 等 ID → 补填 → 204 位置 = MAGV03B01_P01；台账 UnitId/DeviceNo 同步
@@ -196,7 +196,8 @@ public class FixRegressionTests
     [Fact]
     public void FieldNaming_TryParseLoc_NewAndLegacyFormats()
     {
-        // 位置解析：MAGV03B03_P16（16 站机台）与旧 Buffer1_Port5 均可用；8 站机台的 P09 越界
+        // 位置解析：MAGV03Bxx_Pyy（站口=逻辑号，2026-08-20 映射口径）；旧 BUFFER01_P5 格式已废弃；
+        // 8 站机台的 P09 越界；未配置名称的机台回退 BUFFER{index:00} 名称解析
         var cfg = new BufferCConfig
         {
             Plcs =
@@ -211,14 +212,14 @@ public class FixRegressionTests
         svc.Start();   // 建 poller（ManualInstall 需 FindPoller；仿真端口无服务，连接失败走退避，无碍）
         try
         {
-            Assert.True(svc.ManualInstall("X1", "MAGV03B03_P16"));   // B03 16 站 → plc=3 st=16
+            Assert.True(svc.ManualInstall("X1", "MAGV03B03_P16"));   // B03 16 站 → plc=3 逻辑站 16
             Assert.Contains(svc.Ledger, r => r.PlcIndex == 3 && r.Station == 16 && r.CmdState == 1);
-            Assert.True(svc.ManualInstall("X2", "MAGV03B01_P08"));   // B01 8 站边界
+            Assert.True(svc.ManualInstall("X2", "MAGV03B01_P08"));   // B01 8 站边界（逻辑 8=物理 8）
             Assert.Contains(svc.Ledger, r => r.PlcIndex == 1 && r.Station == 8 && r.CmdState == 1);
-            Assert.False(svc.ManualInstall("X3", "MAGV03B01_P09"));  // 8 站机台 P09 越界
+            Assert.False(svc.ManualInstall("X3", "MAGV03B01_P09"));  // 8 站机台 P09 越界（逻辑站只有 1~8）
             Assert.False(svc.ManualInstall("X4", "MAGV03B99_P01"));  // 未知机台名
-            Assert.True(svc.ManualInstall("X5", "Buffer1_Port5"));   // 旧格式兼容
-            Assert.Contains(svc.Ledger, r => r.PlcIndex == 1 && r.Station == 5 && r.CmdState == 1);
+            Assert.False(svc.ManualInstall("X5", "BUFFER01_P5"));  // 旧格式已废弃（2026-08-20）
+            Assert.False(svc.ManualInstall("X6", "MAGV03B01_Pxx"));  // 非数字站口
         }
         finally
         {
@@ -256,7 +257,7 @@ public class FixRegressionTests
 
             // 命令挂起 → 安装失败 → 9001 SET
             plc.CommandHang = true;
-            var hcack = await mcs.SendS2F41Async("CarrierDataInstall", ("CARRIERID", "BOX-9001"), ("CARRIERLOC", "Buffer1_Port2"));
+            var hcack = await mcs.SendS2F41Async("CarrierDataInstall", ("CARRIERID", "BOX-9001"), ("CARRIERLOC", "BUFFER01_P2"));
             Assert.Equal(4, hcack);
             var deadline = Environment.TickCount64 + 15000;
             while (Environment.TickCount64 < deadline)
@@ -273,7 +274,7 @@ public class FixRegressionTests
 
             // 恢复 → 下条命令成功 → 9001 自动清除 + S5F1 CLEAR
             plc.CommandHang = false;
-            hcack = await mcs.SendS2F41Async("CarrierDataInstall", ("CARRIERID", "BOX-9002"), ("CARRIERLOC", "Buffer1_Port2"));
+            hcack = await mcs.SendS2F41Async("CarrierDataInstall", ("CARRIERID", "BOX-9002"), ("CARRIERLOC", "BUFFER01_P2"));
             Assert.Equal(4, hcack);
             deadline = Environment.TickCount64 + 15000;
             var cleared = false;

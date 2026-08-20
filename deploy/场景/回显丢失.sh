@@ -16,7 +16,7 @@ PLC_PID=$!
 sleep 2
 start_bufferc
 
-( printf 'sleep 8000\ninstall WAFER-201 Buffer1_Port2\nwait-ceid 201 8000\nq\n' \
+( printf 'sleep 8000\ninstall WAFER-201 BUFFER01_P2\nwait-ceid 201 8000\nq\n' \
     | "$REPO/publish/simulator/BufferC.Simulator.exe" mcs --mcs-port 5100 \
     > "$WORK/mcs.log" 2>&1 ) &
 MCS_PID=$!

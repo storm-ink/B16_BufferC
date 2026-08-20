@@ -36,7 +36,7 @@ public sealed class PlcPoller
         _app = app;
         _engine = engine;
         _sink = sink;
-        _snap.StationCount = Math.Min(RegisterMap.StationsPerPlc, cfg.Stations);   // 逻辑站口数（寄存器布局恒 16 站空间）
+        _snap.StationCount = Math.Min(RegisterMap.StationsPerPlc, cfg.Stations);   // 逻辑站口数（2026-08-20：快照数组=逻辑索引，寄存器按 StationMap 换算物理）
         _client = new ModbusTcpClient(cfg.Ip, cfg.Port, cfg.UnitId, cfg.TimeoutMs);
         // Modbus 帧级日志（trace 级，logModbusFrames 配置控制；命令通道共用同一 client，命令帧自动覆盖）
         _client.Frame += (isTx, data) =>
@@ -79,10 +79,14 @@ public sealed class PlcPoller
         PollCount, ErrorCount, ReconnectCount, LastError,
         _channel.CommandCount, _channel.CommandFailCount);
 
-    private string ReadStationId(int station) =>
-        RegisterMap.UnpackAscii(_client.ReadHoldingRegisters(
-            (ushort)(RegisterMap.RegCarrierId + (station - 1) * RegisterMap.CarrierIdWords), RegisterMap.CarrierIdWords),
+    /// <summary>读站口 ID 区（station=逻辑号；内部按 StationMap 换算物理地址 50+(p-1)*16）</summary>
+    private string ReadStationId(int station)
+    {
+        int phys = StationMap.PhysicalOf(station, _snap.StationCount);
+        return RegisterMap.UnpackAscii(_client.ReadHoldingRegisters(
+            (ushort)(RegisterMap.RegCarrierId + (phys - 1) * RegisterMap.CarrierIdWords), RegisterMap.CarrierIdWords),
             _cfg.ByteOrder);
+    }
 
     public async Task RunAsync(CancellationToken ct)
     {
@@ -143,11 +147,13 @@ public sealed class PlcPoller
         var fastRegs = _client.ReadHoldingRegisters(306, 35);
         _snap.BufferNo = baseRegs[RegisterMap.RegBufferNo];
         _snap.AlarmSummary = baseRegs[RegisterMap.RegAlarmSummary];
-        for (int i = 0; i < 16; i++)
+        // 快照数组=逻辑索引：寄存器按 StationMap 换算物理槽位（8 站机台物理 9~16 槽不映射，天然不产生幻影事件）
+        for (int l = 1; l <= _snap.StationCount; l++)
         {
-            _snap.StationState[i] = baseRegs[RegisterMap.RegStationState + i];
-            _snap.StationAlarm[i] = baseRegs[RegisterMap.RegStationAlarm + i];
-            _snap.StationAvail[i] = baseRegs[RegisterMap.RegStationAvail + i];
+            int p = StationMap.PhysicalOf(l, _snap.StationCount);
+            _snap.StationState[l - 1] = baseRegs[RegisterMap.RegStationState + p - 1];
+            _snap.StationAlarm[l - 1] = baseRegs[RegisterMap.RegStationAlarm + p - 1];
+            _snap.StationAvail[l - 1] = baseRegs[RegisterMap.RegStationAvail + p - 1];
         }
         _snap.EchoNo = fastRegs[0];
         Array.Copy(fastRegs, 1, _snap.EchoStation, 0, 16);
@@ -159,13 +165,13 @@ public sealed class PlcPoller
         var curStates = _snap.StationState;
         if (_prevStates == null)
         {
-            for (int s = 0; s < 16; s++) _snap.CarrierId[s] = ReadStationId(s + 1);
+            for (int l = 1; l <= _snap.StationCount; l++) _snap.CarrierId[l - 1] = ReadStationId(l);
         }
         else
         {
-            for (int s = 0; s < 16; s++)
-                if (curStates[s] != _prevStates[s])
-                    _snap.CarrierId[s] = ReadStationId(s + 1);
+            for (int l = 1; l <= _snap.StationCount; l++)
+                if (curStates[l - 1] != _prevStates[l - 1])
+                    _snap.CarrierId[l - 1] = ReadStationId(l);
         }
         _prevStates = (ushort[])curStates.Clone();
 
@@ -173,19 +179,26 @@ public sealed class PlcPoller
         // 状态 0 且快照仍有 ID → 每 2s 重读该站 ID 区直到确认空（16 字小片，真 PLC 已验证可承受；覆盖 PLC 侧自行清区等外部路径）
         if (Environment.TickCount64 - _lastIdVerifyTick >= 2000)
         {
-            for (int s = 0; s < _snap.StationCount; s++)
-                if (curStates[s] == RegisterMap.StEmpty && _snap.CarrierId[s] != "")
-                    _snap.CarrierId[s] = ReadStationId(s + 1);
+            for (int l = 1; l <= _snap.StationCount; l++)
+                if (curStates[l - 1] == RegisterMap.StEmpty && _snap.CarrierId[l - 1] != "")
+                    _snap.CarrierId[l - 1] = ReadStationId(l);
             _lastIdVerifyTick = Environment.TickCount64;
         }
 
         // 3. 扫码握手：340=1 → 应答 340=0 → 投递异步命令（D3：不再阻塞轮询——
         // 命令执行/501/201/台账由命令工作线程完成，poller 立即恢复轮询，消除 ≤10s 盲区）
+        // 323 扫码站口号=PLC 写的物理号 → 换算逻辑号（2026-08-20 映射口径）；非法值跳过并告警
         if (_snap.Handshake == 1)
         {
-            int st = _snap.ScanStation;
+            int st;
+            try { st = StationMap.LogicalOf(_snap.ScanStation, _snap.StationCount); }
+            catch (ArgumentOutOfRangeException)
+            {
+                _sink.Log($"PLC{_cfg.Index}", $"扫码站口号非法（323={_snap.ScanStation}，站数 {_snap.StationCount}），跳过本次握手", LogLevel.Warn);
+                st = 0;
+            }
             _client.WriteSingleRegister(RegisterMap.RegHandshake, 0);   // 应答
-            _sink.EnqueueScan(_cfg.Index, st, _snap.ScanCode);
+            if (st > 0) _sink.EnqueueScan(_cfg.Index, st, _snap.ScanCode);
         }
 
         // 4. 事件推导 + 上报（快照先发布，供 SVID 查询；发布深拷贝：本对象每轮就地覆写，活对象会读到半轮混合状态）；随后同步站口主表（变化才写）

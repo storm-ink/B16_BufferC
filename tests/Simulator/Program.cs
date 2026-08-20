@@ -66,7 +66,12 @@ static async Task<int> RunDemoAsync(string[] args)
     await Task.Delay(1500);
     plc.SetStationState(1, 1);
     plc.SetStationState(2, 1);
-    Console.WriteLine("[Plc] 放入完成: 站1/站2 = 1（等 poller 消化 4s）");
+    Console.WriteLine("[Plc] 放入完成: 站1/站2 = 1（载具确认机制：中间态等 ID）");
+    await Task.Delay(1000);
+    // 载具确认机制（2026-08-19）：扫码握手注入 ID → 命令1 写 PLC + 台账 + 带 ID 上报 → SVID15 才可见
+    plc.TriggerScan(1, "WAFER-001");
+    plc.TriggerScan(2, "WAFER-002");
+    Console.WriteLine("[Plc] 扫码注入 ID: 站1/站2（等命令执行 4s）");
     await Task.Delay(4000);
 
     using var mcs = new McsSim();
@@ -119,6 +124,7 @@ static async Task<int> RunPlcAsync(string[] args)
     plc.Start(IPAddress.Any, port);
     Console.WriteLine($"[Plc] 仿真 PLC-1 已启动 0.0.0.0:{plc.Port}（q 退出 / EOF 结束脚本）");
     Console.WriteLine("[Plc] 命令: put st id | state st v | alarm st c | avail st v | scan st code | drop | hang [on|off] | echo-delay ms | echo-drop n | reg addr [val] | info | sleep ms | q");
+    Console.WriteLine("[Plc] 站号=逻辑号（2026-08-20 映射口径，内部按蛇形布线换算物理槽）；reg 命令仍是物理寄存器直写");
     while (true)
     {
         var line = Console.ReadLine();

@@ -562,33 +562,25 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
         SecsEncode.U4(uint.Parse(p.GetValueOrDefault("AlarmId", "0"))));
 
     // ---------- 手动命令（Web/AGVC 与 S2F41 共用同一命令路径） ----------
-    // 宽松解析：取前两个数字作为 Buffer 号与站口（支持 Buffer1_Port3 / 1号Buffer_3号站口 / Buffer1-3 等写法）
-    private static readonly Regex LocRegex = new(@"(\d+)[^\d]*(\d+)", RegexOptions.Compiled);
-
-    /// <summary>站口定位解析：① AGVC cmsIndex 纯数字 ② 现场新格式 机台名_P站口号（MAGV03B01_P05，按名称表精确解析）
-    /// ③ 回落旧宽松文本格式（Buffer1_Port3 等，兼容历史输入）</summary>
+    /// <summary>站口定位解析：① AGVC cmsIndex 纯数字 ② 现场新格式 机台名_P站口号（MAGV03B01_P05，按名称表精确解析）。
+    /// 站口=逻辑号（2026-08-20 映射口径：内部即逻辑，寄存器边界层换算物理）。
+    /// 旧格式 Buffer1_Port5 已废弃（现场 MCS 只用新格式，宽松正则防误解析）。</summary>
     private bool TryParseLoc(string loc, out int plc, out int station)
     {
         if (TryParseCmsIndex(loc, out plc, out station)) return true;
-        int us = loc.IndexOf('_');
-        if (us > 0)
-        {
-            string dev = loc[..us];
-            var m = Regex.Match(loc[(us + 1)..], @"^P(\d{1,2})$");
-            var plcCfg = _cfg.Plcs.FirstOrDefault(p => (p.Name ?? $"BUFFER{p.Index:00}") == dev);
-            if (plcCfg != null && m.Success && int.TryParse(m.Groups[1].Value, out station)
-                && station >= 1 && station <= plcCfg.Stations)
-            {
-                plc = plcCfg.Index;
-                return true;
-            }
-            // 「设备名_Pxx」形态但机台未知/站口越界：直接失败，不回落到宽松正则（防误解析成其他机台）
-            if (m.Success) { plc = 0; station = 0; return false; }
-        }
-        var lm = LocRegex.Match(loc);
         plc = 0; station = 0;
-        return lm.Success && int.TryParse(lm.Groups[1].Value, out plc)
-            && int.TryParse(lm.Groups[2].Value, out station);
+        int us = loc.IndexOf('_');
+        if (us <= 0) return false;
+        string dev = loc[..us];
+        // P 可选：MAGV03B01_P05 与回退命名 BUFFER01_05 都可解析（旧 Buffer1_Port5 已废弃）
+        var m = Regex.Match(loc[(us + 1)..], @"^P?(\d{1,2})$");
+        if (!m.Success) return false;   // 非「设备名_[P]xx」形态：旧格式已废弃，直接失败
+        var plcCfg = _cfg.Plcs.FirstOrDefault(p => (p.Name ?? $"BUFFER{p.Index:00}") == dev);
+        if (plcCfg == null || !int.TryParse(m.Groups[1].Value, out station)
+            || station < 1 || station > plcCfg.Stations)
+            return false;               // 机台未知/站口越界：直接失败（不回落，防误解析成其他机台）
+        plc = plcCfg.Index;
+        return true;
     }
 
     // 悬空命令补偿（C1）：HCACK=4 已确认后命令失败 → 记录 + 内部告警 9001（告警码表 A9 确认后调整）

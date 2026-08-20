@@ -48,8 +48,8 @@ public class ModbusStackTests
             using var client = new ModbusTcpClient("127.0.0.1", port, 1, timeoutMs: 10000);
             client.Connect();
             var ids = RegisterMap.PackAscii("CARRIER001", "high");
-            client.WriteMultipleRegisters(417 + 2 * 16, ids);   // 站口 3 的 ID
-            client.WriteSingleRegister(401 + 2, RegisterMap.CmdWrite);
+            client.WriteMultipleRegisters(417 + 4 * 16, ids);   // 逻辑站口 3 = 物理槽 5 的 ID（2026-08-20 映射口径）
+            client.WriteSingleRegister(401 + 4, RegisterMap.CmdWrite);
             client.WriteSingleRegister(400, 1);                  // 触发执行
             Assert.Equal(1, plc.GetEchoNo());
             Assert.Equal(RegisterMap.CmdWrite, plc.GetEchoStation(3));
@@ -131,7 +131,7 @@ public class ModbusStackTests
             plc.SetReg(500, 0x4142);
             plc.SetReg(672, 9);
 
-            // CmdWrite：整段清零 → ID 就位 → 命令码 → 400 触发
+            // CmdWrite：整段清零 → ID 就位 → 命令码 → 400 触发（Execute 参数=逻辑站口 3 → 物理槽 5）
             Assert.True(ch.Execute(3, RegisterMap.CmdWrite, "NEWID01"));
             Assert.True(plc.GetEchoNo() > 0);
             Assert.Equal(RegisterMap.CmdWrite, plc.GetEchoStation(3));
@@ -141,8 +141,8 @@ public class ModbusStackTests
             var idWords = RegisterMap.PackAscii("NEWID01", "high");
             for (int addr = RegisterMap.RegCmdStation; addr <= 672; addr++)
             {
-                int idOff = addr - (RegisterMap.RegCmdCarrierId + 2 * RegisterMap.CarrierIdWords);
-                ushort expected = addr == RegisterMap.RegCmdStation + 2 ? RegisterMap.CmdWrite
+                int idOff = addr - (RegisterMap.RegCmdCarrierId + 4 * RegisterMap.CarrierIdWords);
+                ushort expected = addr == RegisterMap.RegCmdStation + 4 ? RegisterMap.CmdWrite
                     : (idOff >= 0 && idOff < RegisterMap.CarrierIdWords ? idWords[idOff] : (ushort)0);
                 Assert.Equal(expected, plc.GetReg(addr));
             }
@@ -153,7 +153,7 @@ public class ModbusStackTests
             Assert.Equal("", plc.GetCarrierId(3));
             for (int addr = RegisterMap.RegCmdStation; addr <= 672; addr++)
             {
-                ushort expected = addr == RegisterMap.RegCmdStation + 2 ? RegisterMap.CmdClear : (ushort)0;
+                ushort expected = addr == RegisterMap.RegCmdStation + 4 ? RegisterMap.CmdClear : (ushort)0;
                 Assert.Equal(expected, plc.GetReg(addr));
             }
         }
@@ -187,8 +187,8 @@ public class ModbusStackTests
             var idWords = RegisterMap.PackAscii("RTY00001", "high");
             for (int addr = RegisterMap.RegCmdStation; addr <= 672; addr++)
             {
-                int idOff = addr - (RegisterMap.RegCmdCarrierId + 2 * RegisterMap.CarrierIdWords);
-                ushort expected = addr == RegisterMap.RegCmdStation + 2 ? RegisterMap.CmdWrite
+                int idOff = addr - (RegisterMap.RegCmdCarrierId + 4 * RegisterMap.CarrierIdWords);
+                ushort expected = addr == RegisterMap.RegCmdStation + 4 ? RegisterMap.CmdWrite
                     : (idOff >= 0 && idOff < RegisterMap.CarrierIdWords ? idWords[idOff] : (ushort)0);
                 Assert.Equal(expected, plc.GetReg(addr));
             }
@@ -221,8 +221,8 @@ public class ModbusStackTests
             var idWords = RegisterMap.PackAscii("FAIL00001", "high");
             for (int addr = RegisterMap.RegCmdStation; addr <= 672; addr++)
             {
-                int idOff = addr - (RegisterMap.RegCmdCarrierId + 2 * RegisterMap.CarrierIdWords);
-                ushort expected = addr == RegisterMap.RegCmdStation + 2 ? RegisterMap.CmdWrite
+                int idOff = addr - (RegisterMap.RegCmdCarrierId + 4 * RegisterMap.CarrierIdWords);
+                ushort expected = addr == RegisterMap.RegCmdStation + 4 ? RegisterMap.CmdWrite
                     : (idOff >= 0 && idOff < RegisterMap.CarrierIdWords ? idWords[idOff] : (ushort)0);
                 Assert.Equal(expected, plc.GetReg(addr));
             }
@@ -255,7 +255,7 @@ public class ModbusStackTests
             Assert.Equal("", plc.GetCarrierId(3));
             for (int addr = RegisterMap.RegCmdStation; addr <= 672; addr++)
             {
-                ushort expected = addr == RegisterMap.RegCmdStation + 2 ? RegisterMap.CmdClear : (ushort)0;
+                ushort expected = addr == RegisterMap.RegCmdStation + 4 ? RegisterMap.CmdClear : (ushort)0;
                 Assert.Equal(expected, plc.GetReg(addr));
             }
         }

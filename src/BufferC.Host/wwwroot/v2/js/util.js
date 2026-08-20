@@ -1,6 +1,11 @@
-// util.js — 通用工具（导出: fmtTime, fmtDur, esc, reportError, clearError）
+// util.js — 通用工具（导出: fmtTime, fmtDur, esc, reportError, clearError, physOf, logOf）
 function fmtTime(t) { return t ? new Date(t).toLocaleString('zh-CN', { hour12: false }) : '—'; }
 function fmtDur(ms) { return ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(1) + 's'; }
+
+// 站口物理↔逻辑映射（2026-08-20 现场口径，与后端 StationMap 同公式）：
+// 物理奇数槽=左列、偶数槽=右列；逻辑编号按列自上而下（16 站 1..8/9..16，8 站 1..4/5..8）
+const physOf = (L, N) => (L >= 1 && L <= N) ? (L <= N / 2 ? 2 * L - 1 : 2 * (L - N / 2)) : NaN;
+const logOf = (p, N) => (p >= 1 && p <= N) ? (p % 2 === 1 ? (p + 1) / 2 : p / 2 + N / 2) : NaN;
 
 // 转义 HTML 特殊字符——所有 API/用户数据插入 innerHTML 前必须过一遍（XSS 防线）
 const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');

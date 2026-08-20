@@ -47,10 +47,11 @@ public sealed class CommandChannel
         return new LatencyStats(all.Count, all.Min(), all.Max(), (long)all.Average());
     }
 
-    /// <summary>执行一条站口命令；成功返回 true。
+    /// <summary>执行一条站口命令（station=逻辑号，2026-08-20 映射口径：内部按 StationMap 换算物理寄存器地址）；成功返回 true。
     /// 日志口径（保场景脚本断言力）：首试与成功为 Debug（默认 info 不可见）→ [Cmd] 行只在「重试(Warn)/最终失败(Error)」时出现。</summary>
     public bool Execute(int station, ushort cmd, string? carrierId)
     {
+        int phys = StationMap.PhysicalOf(station, _cfg.Stations);   // 逻辑→物理（越界=内部 bug，直接抛出）
         var sw = Stopwatch.StartNew();
         _gate.Wait();
         try
@@ -72,16 +73,16 @@ public sealed class CommandChannel
                         //    FC16 小片写入（cmdWriteChunkWords 默认 16）：现场 PLC 对 123 字长帧写无响应（3s 超时），16 字已验证
                         _client.WriteMultipleRegisters((ushort)RegisterMap.RegCmdStation,
                             new ushort[RegisterMap.RegCmdAreaWords], _app.CmdWriteChunkWords);
-                        // ② 写【各站操作命令】→ ③ 写【货物ID写入】（现场确认写序：命令码在前、ID 在后）
-                        _client.WriteSingleRegister((ushort)(RegisterMap.RegCmdStation + station - 1), cmd);
+                        // ② 写【各站操作命令】→ ③ 写【货物ID写入】（现场确认写序：命令码在前、ID 在后；地址按物理槽位）
+                        _client.WriteSingleRegister((ushort)(RegisterMap.RegCmdStation + phys - 1), cmd);
                         if (cmd == RegisterMap.CmdWrite)
-                            _client.WriteMultipleRegisters((ushort)(RegisterMap.RegCmdCarrierId + (station - 1) * 16),
+                            _client.WriteMultipleRegisters((ushort)(RegisterMap.RegCmdCarrierId + (phys - 1) * 16),
                                 RegisterMap.PackAscii(carrierId ?? "", _cfg.ByteOrder), _app.CmdWriteChunkWords);
                         areaReady = true;                     // 区域就位——此后失败只重写 400 新编号
                     }
                     // ③ 写 400（新编号）触发执行；成功与否以回显匹配为唯一标准
                     _client.WriteSingleRegister(RegisterMap.RegCmdNo, (ushort)_seq);
-                    if (WaitEcho((ushort)_seq, station, cmd))
+                    if (WaitEcho((ushort)_seq, phys, cmd))
                     {
                         CommandCount++;
                         _log?.Invoke("Cmd", $"PLC{_cfg.Index} 站口{station} 命令{cmd} 成功 seq={_seq}（{sw.ElapsedMilliseconds}ms）", LogLevel.Debug);
@@ -108,7 +109,7 @@ public sealed class CommandChannel
         }
     }
 
-    private bool WaitEcho(ushort seq, int station, ushort cmd)
+    private bool WaitEcho(ushort seq, int physStation, ushort cmd)
     {
         var deadline = Environment.TickCount64 + _app.EchoTimeoutMs;
         while (Environment.TickCount64 < deadline)
@@ -116,7 +117,7 @@ public sealed class CommandChannel
             try
             {
                 var echo = _client.ReadHoldingRegisters(RegisterMap.RegEchoNo, 17);
-                if (echo[0] == seq && echo[station] == cmd) return true;
+                if (echo[0] == seq && echo[physStation] == cmd) return true;   // 307+物理-1 回显槽位
             }
             catch (ModbusException)
             {

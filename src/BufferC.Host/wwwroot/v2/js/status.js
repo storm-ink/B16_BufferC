@@ -116,29 +116,32 @@ function buildDetail(p) {
   document.getElementById('detGrid').innerHTML =
     Array.from({ length: stCnt }, (_, i) => `<div class="cell" id="det-cell-${i + 1}"></div>`).join('');
 
-  // 状态区：严格按地址 0→49 从上到下排（0 编号、1 告警汇总、2~17 站口状态、18~33 站口告警码、34~49 站口可用）
+  // 状态区：严格按地址 0→49 从上到下排（0 编号、1 告警汇总、2~17 站口状态、18~33 站口告警码、34~49 站口可用）。
+  // 2026-08-20 映射口径：站口标签=逻辑号、地址=物理（physOf）；data-r 键=物理地址（fillRegTables 按快照值填）
   const addrRow = (addr, key, name) => ({ cells: [{ t: 'text', v: addr }, { t: 'r', k: key }, { t: 'text', v: name }] });
   const statusRows = [addrRow(0, 0, 'Buffer 编号'), addrRow(1, 1, '告警汇总')];
-  for (let i = 0; i < stCnt; i++) statusRows.push(addrRow(2 + i, 2 + i, `站口${i + 1} 状态`));
-  for (let i = 0; i < stCnt; i++) statusRows.push(addrRow(18 + i, 18 + i, `站口${i + 1} 告警码`));
-  for (let i = 0; i < stCnt; i++) statusRows.push(addrRow(34 + i, 34 + i, `站口${i + 1} 可用(0=在线 1=下线)`));
+  for (let L = 1; L <= stCnt; L++) { const p = physOf(L, stCnt); statusRows.push(addrRow(2 + p - 1, 2 + p - 1, `站口${L}(物理${p}) 状态`)); }
+  for (let L = 1; L <= stCnt; L++) { const p = physOf(L, stCnt); statusRows.push(addrRow(18 + p - 1, 18 + p - 1, `站口${L}(物理${p}) 告警码`)); }
+  for (let L = 1; L <= stCnt; L++) { const p = physOf(L, stCnt); statusRows.push(addrRow(34 + p - 1, 34 + p - 1, `站口${L}(物理${p}) 可用(0=在线 1=下线)`)); }
   buildRegTable(document.getElementById('tbl-reg-status'), { cols: ['地址', '值', '含义'], rows: statusRows });
 
   const echoRows = [addrRow(306, 306, '命令编号回显')];
-  for (let i = 0; i < stCnt; i++) echoRows.push(addrRow(307 + i, 307 + i, `站口${i + 1} 命令回显`));
-  echoRows.push(addrRow(323, 323, '扫码站口号'));
+  for (let L = 1; L <= stCnt; L++) { const p = physOf(L, stCnt); echoRows.push(addrRow(307 + p - 1, 307 + p - 1, `站口${L}(物理${p}) 命令回显`)); }
+  echoRows.push(addrRow(323, 323, '扫码站口号（物理）'));
   echoRows.push({ cells: [{ t: 'text', v: '324~339' }, { t: 'id', k: 'det-scan' }, { t: 'text', v: '货物扫码号' }] });
   echoRows.push(addrRow(340, 340, '握手(1=PLC请求)'));
   buildRegTable(document.getElementById('tbl-reg-echo'), { cols: ['地址', '值', '含义'], rows: echoRows });
 
   const idRows = [];
-  for (let st = 1; st <= stCnt; st++)
-    idRows.push({ cells: [{ t: 'text', v: `站口${st}` }, { t: 'raw', attrs: 'class="mono"', v: `${50 + (st - 1) * 16}~${65 + (st - 1) * 16}` }, { t: 'sid', k: st }, { t: 'hid', k: st }] });
+  for (let L = 1; L <= stCnt; L++) {
+    const p = physOf(L, stCnt);
+    idRows.push({ cells: [{ t: 'text', v: `站口${L}(物理${p})` }, { t: 'raw', attrs: 'class="mono"', v: `${50 + (p - 1) * 16}~${65 + (p - 1) * 16}` }, { t: 'sid', k: L }, { t: 'hid', k: L }] });
+  }
   buildRegTable(document.getElementById('tbl-reg-id'), { cols: ['站口', '地址', '载具ID（快照）', 'HEX（原始值）'], rows: idRows });
 
-  // 命令区 400~416（按需读取，data-r 键为地址——fillRegTables 快照键只到 340，不会覆盖）
+  // 命令区 400~416（按需读取，data-r 键为物理地址——fillRegTables 快照键只到 340，不会覆盖）
   const cmdRows = [addrRow(400, 400, '命令编号（触发）')];
-  for (let i = 0; i < stCnt; i++) cmdRows.push(addrRow(401 + i, 401 + i, `站口${i + 1} 操作命令码（1=写入ID 2=清除）`));
+  for (let p = 1; p <= stCnt; p++) cmdRows.push(addrRow(401 + p - 1, 401 + p - 1, `站口${logOf(p, stCnt)}(物理${p}) 操作命令码（1=写入ID 2=清除）`));
   buildRegTable(document.getElementById('tbl-reg-cmd'), { cols: ['地址', '值', '含义'], rows: cmdRows });
 
   detBuilt = true;
@@ -157,16 +160,18 @@ function renderDetail(s) {
     (st.lastError ? ` <span class="fail-txt">最后错误:${st.lastError}</span>` : '') + `</span>`;
 
   // 16 站口网格（原地更新；色阶 + 图标 + 文字三者并用，颜色绝不单独表意）
+  // 2026-08-20 映射口径：显示「站L(物理p)」并列
   for (const x of p.stations) {
     const cell = document.getElementById('det-cell-' + x.station);
     if (!cell) continue;
+    const phys = physOf(x.station, p.stations.length);
     // 载具确认机制（2026-08-19）：中间态站口（有货无 ID、pending 等待中）黄色闪烁 + 点击补填
     const pend = (typeof pendingRows !== 'undefined' ? pendingRows : []).find(r => r.plcIndex === p.index && r.station === x.station);
     const isPend = !!(pend && (x.state === 1 || x.state === 5));
     cell.className = 'cell st' + (x.state >= 5 ? 99 : x.state) + (isPend ? ' blink' : '');
     cell.dataset.action = isPend ? 'fill-open' : '';
     cell.dataset.arg = isPend ? `${p.index}:${x.station}` : '';
-    cell.innerHTML = `站${x.station} · ${STATE_ICON[x.state] || '·'}${ST[x.state] || ('状态' + x.state)}<br>${esc(x.carrierId) || '—'}${x.truncated ? ' <span class="chip-trunc">截断</span>' : ''}` +
+    cell.innerHTML = `站${x.station}(物理${phys}) · ${STATE_ICON[x.state] || '·'}${ST[x.state] || ('状态' + x.state)}<br>${esc(x.carrierId) || '—'}${x.truncated ? ' <span class="chip-trunc">截断</span>' : ''}` +
       (isPend ? ` <span class="chip-pending">等待ID(${pend.pendingCeid})</span>` : '') +
       (x.alarm ? ` <span class="chip-alarm">A${x.alarm}</span>` : '') +
       (x.avail ? '<span class="offline-mark">下线</span>' : '');
@@ -176,14 +181,20 @@ function renderDetail(s) {
 }
 
 // 寄存器值表原地更新（[data-r]/[data-sid] 按地址填值；表在 PLC 单机测试页，设备详情页与单机测试页共用）
+// 2026-08-20 映射口径：data-r 键=物理地址，快照数组=逻辑索引 → 按 physOf 换算后填值
 function fillRegTables(p) {
   const r = p.registers;
   const stCnt = p.stations.length;   // 该机台逻辑站口数（8/16）
   const v = {};
   v[0] = r.bufferNo; v[1] = r.alarmSummary;
-  for (let i = 0; i < stCnt; i++) { v[2 + i] = p.stations[i].state; v[18 + i] = p.stations[i].alarm; v[34 + i] = p.stations[i].avail; }
+  for (let i = 0; i < stCnt; i++) {
+    const phys = physOf(i + 1, stCnt);
+    v[2 + phys - 1] = p.stations[i].state;
+    v[18 + phys - 1] = p.stations[i].alarm;
+    v[34 + phys - 1] = p.stations[i].avail;
+  }
   v[306] = r.echoNo;
-  for (let i = 0; i < stCnt; i++) v[307 + i] = r.echoStation[i];
+  for (let i = 0; i < stCnt; i++) { const phys = physOf(i + 1, stCnt); v[307 + phys - 1] = r.echoStation[i]; }
   v[323] = r.scanStation; v[340] = r.handshake;
   for (const td of document.querySelectorAll('#page-plctest [data-r], #page-plcdetail [data-r]'))
     if (td.dataset.r in v) td.textContent = v[td.dataset.r];   // 仅快照键（c* 命令区按需读取的值不覆盖）

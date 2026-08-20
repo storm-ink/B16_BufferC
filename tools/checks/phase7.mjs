@@ -62,7 +62,7 @@ export default async ({ ev, wait, baseUrl }) => {
   });
 
   // 站口 2：人工放入 0→5 → 待补数据 tab 行内补填
-  await regwrite(3, 5);           // 站口2 状态=5 人工有货
+  await regwrite(4, 5);           // 站口2=逻辑2→物理3→状态地址4（2026-08-20 映射）；状态=5 人工有货
   await wait(4500);
   await ev(`document.getElementById('pendingStrip').click(); true`);   // 提示条点击 → 跳事件页「待补数据」tab
   await wait(1500);
@@ -80,16 +80,16 @@ export default async ({ ev, wait, baseUrl }) => {
   });
 
   // 站口 3：等 ID 期间被取走 → 中间态撤销（提示条/列表清空，无事件）
-  await regwrite(4, 2);
+  await regwrite(6, 2);           // 站口3=逻辑3→物理5→状态地址6
   await wait(600);
-  await regwrite(4, 1);
+  await regwrite(6, 1);
   await wait(4500);
   out.push({
     label: '站口3 中间态登记（提示条再次出现）',
     ok: await ev(`!document.getElementById('pendingStrip').hidden`),
     got: await ev(`document.getElementById('pendingStrip').textContent`),
   });
-  await regwrite(4, 0);           // 取走 → 撤销
+  await regwrite(6, 0);           // 取走 → 撤销
   await wait(4500);
   out.push({
     label: '状态离开有货态 → 中间态撤销（提示条隐藏、列表清空）',
@@ -106,6 +106,20 @@ export default async ({ ev, wait, baseUrl }) => {
     label: '命令区读 400~416 → 18 行（表头+400+16 站）值已填充 + 提示「已读」',
     ok: await ev(`(() => { const rows = document.querySelectorAll('#tbl-reg-cmd tr'); const v400 = document.querySelector('#tbl-reg-cmd [data-r="400"]'); return rows.length === 18 && v400 && v400.textContent !== '' && document.getElementById('regCmdRaw').textContent.includes('已读 400~416'); })()`),
     got: await ev(`(() => { const v400 = document.querySelector('#tbl-reg-cmd [data-r="400"]'); const v401 = document.querySelector('#tbl-reg-cmd [data-r="401"]'); return { 行数: document.querySelectorAll('#tbl-reg-cmd tr').length, 400: v400 ? v400.textContent : '?', 401: v401 ? v401.textContent : '?' }; })()`),
+  });
+
+  // 站口物理↔逻辑映射显示（2026-08-20）：16 站机台 逻辑2=物理3（蛇形布线）
+  out.push({
+    label: '映射标签：状态区「站口2(物理3) 状态」地址4、命令区表「站口2(物理3) 操作命令码」地址403',
+    ok: await ev(`(() => { const st = document.getElementById('tbl-reg-status'); const cmd = document.getElementById('tbl-reg-cmd'); const r = [...st.querySelectorAll('tr')].find(x => x.textContent.includes('站口2(物理3) 状态')); return r !== undefined && r.children[0].textContent.trim() === '4' && cmd.textContent.includes('站口2(物理3) 操作命令码') && [...cmd.querySelectorAll('tr')].some(x => x.textContent.includes('站口2(物理3)') && x.children[0].textContent.trim() === '403'); })()`),
+    got: await ev(`(() => { const st = document.getElementById('tbl-reg-status'); const r = [...st.querySelectorAll('tr')].find(x => x.textContent.includes('站口2(物理3)')); return r ? r.textContent.replace(/\\s+/g, ' ') : '未找到'; })()`),
+  });
+  await ev(`openPage('plcdetail'); true`);
+  await wait(2000);
+  out.push({
+    label: '详情页网格「站2(物理3)」并列显示',
+    ok: await ev(`document.getElementById('det-cell-2').textContent.includes('站2(物理3)')`),
+    got: await ev(`document.getElementById('det-cell-2').textContent.slice(0, 36)`),
   });
 
   return out;

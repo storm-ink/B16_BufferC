@@ -13,6 +13,7 @@ public sealed class PlcSim : IDisposable
     private readonly int _index;
     private readonly byte _unitId;
     private readonly string _byteOrder;
+    private readonly int _stations;   // 该机台站口数（8/16）：行为 API 参数=逻辑号，内部按 StationMap 换算物理寄存器
     private readonly ushort[] _regs = new ushort[1024];
     private readonly object _lock = new();
     private TcpListener? _listener;
@@ -20,11 +21,12 @@ public sealed class PlcSim : IDisposable
     private ushort _lastExecSeq;
     private readonly List<TcpClient> _clients = new();
 
-    public PlcSim(int index, byte unitId = 1, string byteOrder = "high")
+    public PlcSim(int index, byte unitId = 1, string byteOrder = "high", int stations = 16)
     {
         _index = index;
         _unitId = unitId;
         _byteOrder = byteOrder;
+        _stations = stations;
         _regs[RegisterMap.RegBufferNo] = (ushort)index;
     }
 
@@ -74,37 +76,45 @@ public sealed class PlcSim : IDisposable
     public volatile int FailOnWriteNo;
     private long _writeCount;
 
-    // ---------- 行为 API（测试驱动） ----------
+    // ---------- 行为 API（测试驱动；station 参数=逻辑号，内部按 StationMap 换算物理寄存器） ----------
     public ushort GetReg(int addr) { lock (_lock) return _regs[addr]; }
-    public void SetReg(int addr, ushort v) { lock (_lock) _regs[addr] = v; }
-    public void SetStationState(int station, ushort state) => SetReg(RegisterMap.RegStationState + station - 1, state);
-    public void SetStationAlarm(int station, ushort alarm) => SetReg(RegisterMap.RegStationAlarm + station - 1, alarm);
-    public void SetStationAvail(int station, ushort avail) => SetReg(RegisterMap.RegStationAvail + station - 1, avail);
+    public void SetReg(int addr, ushort v) { lock (_lock) _regs[addr] = v; }   // 物理直写（幻影测试/reg 命令用）
+    public void SetStationState(int station, ushort state) =>
+        SetReg(RegisterMap.RegStationState + PhysOf(station) - 1, state);
+    public void SetStationAlarm(int station, ushort alarm) =>
+        SetReg(RegisterMap.RegStationAlarm + PhysOf(station) - 1, alarm);
+    public void SetStationAvail(int station, ushort avail) =>
+        SetReg(RegisterMap.RegStationAvail + PhysOf(station) - 1, avail);
     public void SetCarrierId(int station, string id)
     {
+        int phys = PhysOf(station);
         var words = RegisterMap.PackAscii(id, _byteOrder);
-        lock (_lock) Array.Copy(words, 0, _regs, RegisterMap.RegCarrierId + (station - 1) * 16, 16);
+        lock (_lock) Array.Copy(words, 0, _regs, RegisterMap.RegCarrierId + (phys - 1) * 16, 16);
     }
     public string GetCarrierId(int station)
     {
+        int phys = PhysOf(station);
         lock (_lock)
-            return RegisterMap.UnpackAscii(_regs[(RegisterMap.RegCarrierId + (station - 1) * 16)..(RegisterMap.RegCarrierId + station * 16)], _byteOrder);
+            return RegisterMap.UnpackAscii(_regs[(RegisterMap.RegCarrierId + (phys - 1) * 16)..(RegisterMap.RegCarrierId + phys * 16)], _byteOrder);
     }
     public ushort GetEchoNo() => GetReg(RegisterMap.RegEchoNo);
-    public ushort GetEchoStation(int station) => GetReg(RegisterMap.RegEchoStation + station - 1);
+    public ushort GetEchoStation(int station) => GetReg(RegisterMap.RegEchoStation + PhysOf(station) - 1);
 
-    /// <summary>扫码器触发：写 323/324~339，置 340=1</summary>
+    /// <summary>扫码器触发：写 323=物理站口/324~339，置 340=1（PLC 侧 323 是物理号）</summary>
     public void TriggerScan(int station, string code)
     {
-        Note($"扫码握手 站{station} 码=\"{code}\"（置 340=1）");
+        int phys = PhysOf(station);
+        Note($"扫码握手 站{station}（物理{phys}）码=\"{code}\"（置 340=1）");
         var words = RegisterMap.PackAscii(code, _byteOrder);
         lock (_lock)
         {
-            _regs[RegisterMap.RegScanStation] = (ushort)station;
+            _regs[RegisterMap.RegScanStation] = (ushort)phys;
             Array.Copy(words, 0, _regs, RegisterMap.RegScanCode, 16);
             _regs[RegisterMap.RegHandshake] = 1;
         }
     }
+
+    private int PhysOf(int station) => BufferC.Core.Core.StationMap.PhysicalOf(station, _stations);
 
     // ---------- 服务端 ----------
     private async Task AcceptLoopAsync(CancellationToken ct)

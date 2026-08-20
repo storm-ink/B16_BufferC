@@ -14,7 +14,13 @@ function plctNeedPlc() {
   if (isNaN(plc)) { plctAdd('fail', `请填 PLC 编号（当前读到：${JSON.stringify(document.getElementById('plctPlc').value)}）`); return null; }
   return plc;
 }
-function plctStValid() { const st = plctSt(); return !isNaN(st) && st >= 1 && st <= 16 ? st : NaN; }
+// 站口输入=物理号（2026-08-20 映射口径：命令表单保持 PLC 协议视角）；上限=该机台站口数（8/16）
+function plctStValid() {
+  const st = plctSt();
+  const plc = plctNum();
+  const cnt = !isNaN(plc) && lastStatus ? ((lastStatus.plcs || []).find(x => x.index === plc)?.stations.length ?? 16) : 16;
+  return !isNaN(st) && st >= 1 && st <= cnt ? st : NaN;
+}
 function plctSetCmd(v) { document.getElementById('plctCmdCode').value = v; }
 
 // 下发记录条目：主行（时间+结果）+ 明细行（转译/原始数据/回读/诊断）
@@ -177,15 +183,19 @@ async function renderPlctEcho() {
   const p = lastStatus ? (lastStatus.plcs || []).find(x => x.index === plc) : null;
   if (!p) { el.innerHTML = '<tr><td>PLC 未配置或未在线</td></tr>'; return; }
   const r = p.registers;
+  const stCnt = p.stations.length;
   document.getElementById('plctBo').textContent = r.byteOrder === 'low' ? '低字节在前' : '高字节在前';
+  // 2026-08-20 映射口径：命令表单站口输入=物理号 → 高亮行按 logOf 换算逻辑行；回显表标签「站L(物理p)」+ 物理地址
   const st = plctStValid();
+  const stLogical = isNaN(st) ? NaN : logOf(st, stCnt);
   const rows = [{ cells: [{ t: 'text', v: 306 }, { t: 'text', v: r.echoNo }, { t: 'text', v: '命令编号回显' }] }];
-  for (let i = 0; i < p.stations.length; i++) {
-    const isTarget = !isNaN(st) && i + 1 === st;
-    const isOk = plctLastOk && plc === plctLastOk.plc && i + 1 === plctLastOk.station && r.echoStation[i] === plctLastOk.cmd;
-    rows.push({ cls: isOk ? 'hl-ok' : isTarget ? 'hl-target' : '', cells: [{ t: 'text', v: 307 + i }, { t: 'text', v: r.echoStation[i] }, { t: 'text', v: `站口${i + 1} 命令回显` }] });
+  for (let L = 1; L <= stCnt; L++) {
+    const phys = physOf(L, stCnt);
+    const isTarget = L === stLogical;
+    const isOk = plctLastOk && plc === plctLastOk.plc && L === logOf(plctLastOk.station, stCnt) && r.echoStation[L - 1] === plctLastOk.cmd;
+    rows.push({ cls: isOk ? 'hl-ok' : isTarget ? 'hl-target' : '', cells: [{ t: 'text', v: 307 + phys - 1 }, { t: 'text', v: r.echoStation[L - 1] }, { t: 'text', v: `站口${L}(物理${phys}) 命令回显` }] });
   }
-  rows.push({ cells: [{ t: 'text', v: 323 }, { t: 'text', v: r.scanStation }, { t: 'text', v: '扫码站口号' }] });
+  rows.push({ cells: [{ t: 'text', v: 323 }, { t: 'text', v: r.scanStation }, { t: 'text', v: '扫码站口号（物理）' }] });
   rows.push({ cells: [{ t: 'text', v: '324~339' }, { t: 'text', v: esc(r.scanCode || '—') }, { t: 'text', v: '货物扫码号' }] });
   rows.push({ cells: [{ t: 'text', v: 340 }, { t: 'text', v: r.handshake }, { t: 'text', v: '握手（1=PLC 请求）' }] });
   buildRegTable(el, { cols: ['地址', '值', '含义'], rows });
