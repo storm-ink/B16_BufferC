@@ -140,8 +140,9 @@ function buildDetail(p) {
   buildRegTable(document.getElementById('tbl-reg-id'), { cols: ['站口', '地址', '载具ID（快照）', 'HEX（原始值）'], rows: idRows });
 
   // 命令区 400~416（按需读取，data-r 键为物理地址——fillRegTables 快照键只到 340，不会覆盖）
+  // 行按逻辑站排（与状态区/ID 区一致；2026-08-20 用户口径）
   const cmdRows = [addrRow(400, 400, '命令编号（触发）')];
-  for (let p = 1; p <= stCnt; p++) cmdRows.push(addrRow(401 + p - 1, 401 + p - 1, `站口${logOf(p, stCnt)}(物理${p}) 操作命令码（1=写入ID 2=清除）`));
+  for (let L = 1; L <= stCnt; L++) { const p = physOf(L, stCnt); cmdRows.push(addrRow(401 + p - 1, 401 + p - 1, `站口${L}(物理${p}) 操作命令码（1=写入ID 2=清除）`)); }
   buildRegTable(document.getElementById('tbl-reg-cmd'), { cols: ['地址', '值', '含义'], rows: cmdRows });
 
   detBuilt = true;
