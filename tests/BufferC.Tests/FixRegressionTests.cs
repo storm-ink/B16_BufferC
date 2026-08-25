@@ -457,7 +457,7 @@ public class FixRegressionTests
     [Fact]
     public async Task Remove_UsesLedgerId_ClearsLedgerAndPlc()
     {
-        // ④取走：203 参数取主表 ID → 上报后主表清空 → 命令2 清 PLC ID 区 → SVID15 不再含
+        // ④取走：202 参数取主表 ID（1→0 直跳=人工取走）→ 上报后主表清空 → 命令2 清 PLC ID 区 → SVID15 不再含
         var plc = new PlcSim(1);
         var plcPort = plc.Start();
         var cfg = new BufferCConfig
@@ -485,8 +485,8 @@ public class FixRegressionTests
             Assert.NotNull(await mcs.WaitForEventAsync(204));
             Assert.Equal("CARRIER2041", plc.GetCarrierId(1));
 
-            plc.SetStationState(1, 0);                                            // AGV 取走（1→0）
-            var ev = await mcs.WaitForEventAsync(203);
+            plc.SetStationState(1, 0);                                            // 人工取走（1→0 直跳）→ 202
+            var ev = await mcs.WaitForEventAsync(202);
             Assert.NotNull(ev);
             var rpt = ev!.Items()[0].Children![2].Children![0].Children![1];
             Assert.Equal("CARRIER2041", rpt.Children![0].AsString());             // 参数取主表 ID

@@ -292,9 +292,10 @@ public sealed class ScenarioTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Scenario12_CarrierRemoved_203()
+    public async Task Scenario12_CarrierRemoved_202_203()
     {
-        // 取走路径：1→0 直跳报 203，RPT2=载具ID+位置（主表 ID；MCS 现场约定 2026-08-17）
+        // 取走路径（2026-08-25 口径）：1→0 直跳 = 人工取走 → 202；AGV 必经正取，3→0 → 203
+        // RPT2=载具ID+位置（主表 ID；MCS 现场约定 2026-08-17）
         _plc.SetCarrierId(2, "CARRIER002");
         _plc.SetStationState(2, 2);
         await Task.Delay(200);
@@ -302,15 +303,32 @@ public sealed class ScenarioTests : IAsyncLifetime
         Assert.Null(await _mcs.WaitForEventAsync(204, 500));
         var (ok, _) = _svc.FillCarrierPending(1, 2, "CARRIER002");
         Assert.True(ok);
-        var e204 = await _mcs.WaitForEventAsync(204);
-        Assert.NotNull(e204);
-        _plc.SetStationState(2, 0);                                      // AGV 路径直跳取出（1→0）→ 203
+        Assert.NotNull(await _mcs.WaitForEventAsync(204));
+
+        _plc.SetStationState(2, 0);                                      // 人工直跳取出（1→0）→ 202
+        var e202 = await _mcs.WaitForEventAsync(202);
+        Assert.NotNull(e202);
+        var rpt2 = e202!.Items()[0].Children![2].Children![0].Children![1];   // RPT2: A id, A CarrierLoc（MCS 现场约定）
+        Assert.Equal("CARRIER002", rpt2.Children![0].AsString());        // 上报参数取主表 ID
+        Assert.Equal("BUFFER01_02", rpt2.Children![1].AsString());
+
+        // AGV 取走：经正取（1→3 无事件，3→0 触发）→ 203
+        _plc.SetCarrierId(3, "CARRIER003");
+        _plc.SetStationState(3, 2);
+        await Task.Delay(200);
+        _plc.SetStationState(3, 1);
+        Assert.Null(await _mcs.WaitForEventAsync(204, 500));
+        var (ok2, _) = _svc.FillCarrierPending(1, 3, "CARRIER003");
+        Assert.True(ok2);
+        Assert.NotNull(await _mcs.WaitForEventAsync(204));
+        _plc.SetStationState(3, 3);                                      // 正取（无事件）
+        await Task.Delay(200);
+        _plc.SetStationState(3, 0);
         var e203 = await _mcs.WaitForEventAsync(203);
         Assert.NotNull(e203);
-        var l = e203!.Items()[0].Children!;
-        var rpt = l[2].Children![0].Children![1];                        // RPT2: A id, A CarrierLoc（MCS 现场约定）
-        Assert.Equal("CARRIER002", rpt.Children![0].AsString());         // 上报参数取主表 ID
-        Assert.Equal("BUFFER01_02", rpt.Children![1].AsString());
+        var rpt3 = e203!.Items()[0].Children![2].Children![0].Children![1];
+        Assert.Equal("CARRIER003", rpt3.Children![0].AsString());
+        Assert.Equal("BUFFER01_03", rpt3.Children![1].AsString());
     }
 
     [Fact]
@@ -1398,7 +1416,7 @@ public sealed class ScenarioTests : IAsyncLifetime
             var rptA = e203a!.Items()[0].Children![2].Children![0].Children![1];
             Assert.Equal("BUFFER01_02", rptA.Children![1].AsString());
 
-            // 5) 异常跳变只记日志不上报：0→2→1（等 ID）→ 补填出 204 → 1→5 无 201 → 5→1 无 204 → 1→0 收尾（203 带 ID）
+            // 5) 异常跳变只记日志不上报：0→2→1（等 ID）→ 补填出 204 → 1→5 无 201 → 5→1 无 204 → 1→0 收尾（202 带 ID，直跳=人工取走）
             plc.SetStationState(3, 2);
             await Task.Delay(200);
             plc.SetStationState(3, 1);
@@ -1411,7 +1429,7 @@ public sealed class ScenarioTests : IAsyncLifetime
             plc.SetStationState(3, 1);
             Assert.Equal(0, await mcs.WaitForEventCountAsync(204, 1, 400));      // 异常 5→1 不上报
             plc.SetStationState(3, 0);
-            Assert.NotNull(await mcs.WaitForEventAsync(203));
+            Assert.NotNull(await mcs.WaitForEventAsync(202));
             mcs.Dispose();
         }
         finally

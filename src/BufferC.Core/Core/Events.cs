@@ -128,10 +128,10 @@ public sealed class EventEngine
                     events.Add(new PlcEvent(EventKind.CarrierInstallCompleted, P(
                         "CarrierID", cur.CarrierId[i], "CarrierLoc", Loc(cur.PlcIndex, i + 1), "Station", (i + 1).ToString())));
             }
-            else if (b == 0 && a != 0) // 取出：人工（5→0 直跳）→ 202 CarrierRemoveCompleted；AGV（1/3→0）→ 203 CarrierRemoved
+            else if (b == 0 && a != 0) // 取出（2026-08-25 口径）：AGV 经正取（3→0）→ 203 CarrierRemoved；人工直跳（1/5→0）→ 202 CarrierRemoveCompleted
             {
                 _suppress204.Remove(key);
-                var kind = a == RegisterMap.StManualCarrier ? EventKind.CarrierRemoveCompleted : EventKind.CarrierRemoved;
+                var kind = a == RegisterMap.StTaking ? EventKind.CarrierRemoved : EventKind.CarrierRemoveCompleted;
                 events.Add(new PlcEvent(kind, P(
                     "CarrierID", cur.CarrierId[i], "CarrierLoc", Loc(cur.PlcIndex, i + 1), "Station", (i + 1).ToString())));
             }
