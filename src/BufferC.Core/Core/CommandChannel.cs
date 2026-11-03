@@ -49,8 +49,13 @@ public sealed class CommandChannel
 
     /// <summary>执行一条站口命令（station=逻辑号，2026-08-20 映射口径：内部按 StationMap 换算物理寄存器地址）；成功返回 true。
     /// 日志口径（保场景脚本断言力）：首试与成功为 Debug（默认 info 不可见）→ [Cmd] 行只在「重试(Warn)/最终失败(Error)」时出现。</summary>
-    public bool Execute(int station, ushort cmd, string? carrierId)
+    public bool Execute(int station, ushort cmd, string? carrierId) => Execute(station, cmd, carrierId, out _);
+
+    /// <summary>同上，并经 <paramref name="seq"/> 返回本次实际使用的 400 触发编号——
+    /// 调用方在 _gate 释放后再读 LastSeq 会被同 PLC 排队的下一条命令顶掉（锁管理器记录流水用）。</summary>
+    public bool Execute(int station, ushort cmd, string? carrierId, out uint seq)
     {
+        seq = _seq;
         int phys = StationMap.PhysicalOf(station, _cfg.Stations);   // 逻辑→物理（越界=内部 bug，直接抛出）
         var sw = Stopwatch.StartNew();
         _gate.Wait();
@@ -60,6 +65,7 @@ public sealed class CommandChannel
             for (int attempt = 0; attempt <= _app.EchoRetryCount; attempt++)
             {
                 _seq = _seq % 65535 + 1;                      // 1~65535 回绕（每次尝试新编号：PLC 靠 400 新值触发）
+                seq = _seq;
                 if (attempt > 0)
                     _log?.Invoke("Cmd", $"PLC{_cfg.Index} 站口{station} 重试 {attempt}…（上次回显超时/传输异常，seq={_seq}）", LogLevel.Warn);
                 else

@@ -32,6 +32,8 @@ public sealed class PlcSnapshot
     public ushort EchoNo;                            // 306
     public ushort[] EchoStation = new ushort[16];    // 307~322
     public ushort Handshake;                         // 340
+    public ushort[] StationLock = new ushort[16];    // 341~356（V9；0=未锁 1=已锁；PLC 不可读时全 0）
+    public bool StationLockValid;                    // 341~356 本次读取成功（V8 PLC 读失败=false，对账跳过防误清）
     public ushort ScanStation;                       // 323
     public string ScanCode = "";                     // 324~339
 
@@ -48,6 +50,8 @@ public sealed class PlcSnapshot
         EchoNo = EchoNo,
         EchoStation = (ushort[])EchoStation.Clone(),
         Handshake = Handshake,
+        StationLock = (ushort[])StationLock.Clone(),
+        StationLockValid = StationLockValid,
         ScanStation = ScanStation,
         ScanCode = ScanCode,
     };

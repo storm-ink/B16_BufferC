@@ -86,10 +86,11 @@ public sealed class AgvcClient : IDisposable
     }
 
     /// <summary>
-    /// 推送单站口设备状态（变化即推）：service=PLC 34~49 控制状态寄存器原始值、present=状态区有货(1/5)、
+    /// 推送单站口设备状态（变化即推）：service=AGVC 口径在服标记（1=在线/0=停服，由 PLC 34~49 控制状态原始值取反而来，
+    /// 2026-08-28 现场联调确认 AGVC 实际解析与 PLC 语义相反）、present=状态区有货(1/5)、
     /// trayId=货物ID（inputRequest/outputRequest 字段已按现场要求移除）。失败按 RetryCount 重试，仅日志；成功判定 code=="0"。
     /// </summary>
-    public async Task<bool> PushStatusAsync(int plc, int station, ushort serviceReg, bool present, string trayId, CancellationToken ct)
+    public async Task<bool> PushStatusAsync(int plc, int station, ushort serviceValue, bool present, string trayId, CancellationToken ct)
     {
         string cmsIndex = (plc * _cfg.CmsIndexBase + station).ToString();
         // 现场确认：去掉 inputRequest/outputRequest 两个字段（不再发送）；reqCode 每次请求随机值、长度≤32（时间戳+随机数，现场要求 2026-08-17）
@@ -101,7 +102,7 @@ public sealed class AgvcClient : IDisposable
                 new
                 {
                     cmsIndex,
-                    service = serviceReg.ToString(),
+                    service = serviceValue.ToString(),
                     present = present ? "1" : "0",
                     trayId,
                 }
@@ -122,7 +123,7 @@ public sealed class AgvcClient : IDisposable
                 var r = JsonSerializer.Deserialize<PushResponse>(text, CaseInsensitive);
                 if (r?.Code == "0")
                 {
-                    _log("AGVC", $"推送设备状态 {cmsIndex} OK（service={serviceReg} present={(present ? 1 : 0)} trayId=\"{trayId}\"）", LogLevel.Info);
+                    _log("AGVC", $"推送设备状态 {cmsIndex} OK（service={serviceValue} present={(present ? 1 : 0)} trayId=\"{trayId}\"）", LogLevel.Info);
                     _onTraffic?.Invoke("pushDeviceStatusInfo", cmsIndex, payload, text, true);
                     return true;
                 }

@@ -1,6 +1,6 @@
 namespace BufferC.Core.Modbus;
 
-/// <summary>V8 寄存器表（唯一事实源：开发文档 §2.2）</summary>
+/// <summary>V9 寄存器表（唯一事实源：开发文档 §2.2；V9 新增 341~356 锁状态与命令码 3/4）</summary>
 public static class RegisterMap
 {
     public const int RegBufferNo = 0;          // Buffer 编号 1~15
@@ -14,6 +14,7 @@ public static class RegisterMap
     public const int RegScanStation = 323;     // 扫码站口号 1~16
     public const int RegScanCode = 324;        // 货物扫码号（324~339）
     public const int RegHandshake = 340;       // 握手：PLC 写 1=请求，BufferC 写 0=应答
+    public const int RegStationLock = 341;     // 站口 1~16 加锁状态（341~356，V9 新增；物理槽排列）
     public const int RegCmdNo = 400;           // 命令编号（写，1~65535 自增）
     public const int RegCmdStation = 401;      // 站口命令（401~416）
     public const int RegCmdCarrierId = 417;    // 货物ID 写入（417~672）
@@ -26,6 +27,8 @@ public static class RegisterMap
     public const ushort CmdNone = 0;
     public const ushort CmdWrite = 1;          // 写入货物ID
     public const ushort CmdClear = 2;          // 清除货物ID
+    public const ushort CmdLock = 3;           // 加锁（V9 新增）
+    public const ushort CmdUnlock = 4;         // 解锁（V9 新增）
 
     // 站口状态
     public const ushort StEmpty = 0;

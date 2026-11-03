@@ -24,10 +24,19 @@ public sealed class Inventory : IDisposable
         ushort CmdState, ushort CmdType, string CmdCarrierId, string CmdTime, uint CmdSeq, string CmdSource,
         int CarrierConfirmed, int PendingCeid, string PendingAt, string PendingId);
 
+    /// <summary>货格锁当前态（cell_locks 表；只保存发生过的站口）。PLC 341~356 是权威，本表是镜像 + 超时计时依据。</summary>
+    public sealed record CellLockRow(int PlcIndex, int Station, bool Locked, string Source, string Guid,
+        DateTime LockedAt, DateTime AgentTime, DateTime UpdatedAt);
+
+    /// <summary>货格加解锁流水（cell_lock_events；GUID 去重依据，失败也留痕）。</summary>
+    public sealed record CellLockEventRow(DateTime Time, string Guid, int PlcIndex, int Station, string Action,
+        string Result, string Message, uint CmdSeq, DateTime AgentTime);
+
     private readonly string? _dbPath;
     private readonly Dictionary<string, StationRow> _stations = new();   // "plc:station" → 行
     private readonly Dictionary<string, string> _byCarrier = new();      // carrierId → key（只在库）
     private readonly List<AlarmStatus> _alarms = new();                  // 告警表内存镜像（清除即删）
+    private readonly Dictionary<string, CellLockRow> _cellLocks = new(); // "plc:station" → 锁当前态
     private readonly object _lock = new();
     private readonly object _dbLock = new();                             // 单例连接：所有 SQL 命令串行化（锁序恒为 _lock → _dbLock，不反向）
     private SqliteConnection? _conn;
@@ -554,6 +563,108 @@ public sealed class Inventory : IDisposable
         return rows;
     }
 
+    // ---------- 货格加解锁（V9：341~356 镜像 + GUID 流水；PLC 为权威，本表只做镜像/超时/审计） ----------
+    /// <summary>全部锁行（只含有过交互的站口；未出现过的站口由调用方按「未锁」处理）</summary>
+    public IReadOnlyList<CellLockRow> CellLocks
+    {
+        get { lock (_lock) return _cellLocks.Values.OrderBy(r => r.PlcIndex).ThenBy(r => r.Station).ToList(); }
+    }
+
+    public CellLockRow? FindCellLock(int plcIndex, int station)
+    {
+        lock (_lock) return _cellLocks.GetValueOrDefault(Key(plcIndex, station));
+    }
+
+    /// <summary>置锁镜像（locked=1 并记录当前持有者与计时起点）；每次请求/采纳都重写，变化才落库</summary>
+    public void SetCellLock(int plcIndex, int station, string source, string guid, DateTime lockedAt, DateTime agentTime)
+    {
+        lock (_lock)
+        {
+            var key = Key(plcIndex, station);
+            if (_cellLocks.TryGetValue(key, out var cur) && cur.Locked
+                && cur.Guid == guid && cur.Source == source && cur.LockedAt == lockedAt) return;
+            var now = DateTime.Now;
+            _cellLocks[key] = new CellLockRow(plcIndex, station, true, source, guid, lockedAt, agentTime, now);
+            Exec("INSERT OR REPLACE INTO cell_locks(cell_key, plc, station, locked, source, lock_guid, locked_at, agent_time, updated_at) " +
+                 "VALUES($k,$p,$s,1,$src,$g,$la,$at,$u)",
+                 ("$k", key), ("$p", plcIndex), ("$s", station), ("$src", source), ("$g", guid),
+                 ("$la", NowOfOrEmpty(lockedAt)), ("$at", NowOfOrEmpty(agentTime)), ("$u", NowOf(now)));
+        }
+    }
+
+    /// <summary>清锁镜像（保留最近一次交互来源/GUID 供查询；locked_at 清空）</summary>
+    public void ClearCellLock(int plcIndex, int station, string source, string guid, DateTime agentTime)
+    {
+        lock (_lock)
+        {
+            var key = Key(plcIndex, station);
+            if (_cellLocks.TryGetValue(key, out var cur) && !cur.Locked
+                && cur.Guid == guid && cur.Source == source) return;
+            var now = DateTime.Now;
+            _cellLocks[key] = new CellLockRow(plcIndex, station, false, source, guid, DateTime.MinValue, agentTime, now);
+            Exec("INSERT OR REPLACE INTO cell_locks(cell_key, plc, station, locked, source, lock_guid, locked_at, agent_time, updated_at) " +
+                 "VALUES($k,$p,$s,0,$src,$g,'',$at,$u)",
+                 ("$k", key), ("$p", plcIndex), ("$s", station), ("$src", source), ("$g", guid),
+                 ("$at", NowOfOrEmpty(agentTime)), ("$u", NowOf(now)));
+        }
+    }
+
+    public void AddCellLockEvent(DateTime t, string guid, int plcIndex, int station, string action, string result,
+        string message, uint cmdSeq, DateTime agentTime) =>
+        Exec("INSERT INTO cell_lock_events(time, guid, plc, station, action, result, message, cmd_seq, agent_time) " +
+             "VALUES($t,$g,$p,$s,$a,$r,$m,$q,$at); " +
+             $"DELETE FROM cell_lock_events WHERE id <= (SELECT MAX(id) FROM cell_lock_events) - {_historyCap}",
+             ("$t", NowOf(t)), ("$g", guid), ("$p", plcIndex), ("$s", station), ("$a", action),
+             ("$r", result), ("$m", message), ("$q", (long)cmdSeq), ("$at", NowOfOrEmpty(agentTime)));
+
+    /// <summary>取该 GUID 最新一条流水（去重兜底；内存模式返回 null，由 CellLockManager 的内存缓存负责）</summary>
+    public CellLockEventRow? LastCellLockEvent(string guid)
+    {
+        if (_dbPath == null) return null;
+        try
+        {
+            lock (_dbLock)
+            {
+                using var cmd = Conn().CreateCommand();
+                cmd.CommandText = "SELECT time, guid, plc, station, action, result, message, cmd_seq, agent_time " +
+                                  "FROM cell_lock_events WHERE guid=$g ORDER BY id DESC LIMIT 1";
+                cmd.Parameters.AddWithValue("$g", guid);
+                using var r = cmd.ExecuteReader();
+                if (!r.Read()) return null;
+                return new CellLockEventRow(ParseTime(DStr(r, 0)), DStr(r, 1), r.GetInt32(2), r.GetInt32(3),
+                    DStr(r, 4), DStr(r, 5), DStr(r, 6), (uint)r.GetInt64(7), ParseTime(DStr(r, 8)));
+            }
+        }
+        catch (Exception e)
+        {
+            _log("Inventory", $"锁流水查询失败: {e.Message}", LogLevel.Warn);
+            return null;
+        }
+    }
+
+    public List<CellLockEventRow> LoadCellLockEvents(int tail)
+    {
+        var rows = new List<CellLockEventRow>();
+        if (_dbPath == null) return rows;
+        try
+        {
+            lock (_dbLock)
+            {
+                using var cmd = Conn().CreateCommand();
+                cmd.CommandText = "SELECT time, guid, plc, station, action, result, message, cmd_seq, agent_time " +
+                                  "FROM cell_lock_events ORDER BY id DESC LIMIT $n";
+                cmd.Parameters.AddWithValue("$n", tail);
+                using var r = cmd.ExecuteReader();
+                while (r.Read())
+                    rows.Add(new CellLockEventRow(ParseTime(DStr(r, 0)), DStr(r, 1), r.GetInt32(2), r.GetInt32(3),
+                        DStr(r, 4), DStr(r, 5), DStr(r, 6), (uint)r.GetInt64(7), ParseTime(DStr(r, 8))));
+                rows.Reverse();
+            }
+        }
+        catch (Exception e) { _log("Inventory", $"锁流水加载失败: {e.Message}", LogLevel.Warn); }
+        return rows;
+    }
+
     // ---------- 设备状态（SVID 14/21） ----------
     public void SetDeviceState(ushort controlState, ushort scState)
     {
@@ -569,6 +680,7 @@ public sealed class Inventory : IDisposable
 
     private static string Key(int plcIndex, int station) => $"{plcIndex}:{station}";
     private static string Now() => DateTime.Now.ToString("yyyyMMddHHmmssfff");
+    private static string NowOfOrEmpty(DateTime t) => t == DateTime.MinValue ? "" : NowOf(t);
 
     // ---------- SQLite 持久化（WAL；旧版 carriers/units 表不再读取） ----------
     private void LoadFromDb()
@@ -595,6 +707,13 @@ public sealed class Inventory : IDisposable
                         CREATE TABLE IF NOT EXISTS history_commands(id INTEGER PRIMARY KEY AUTOINCREMENT, time TEXT, source TEXT, plc INTEGER, station INTEGER, cmd TEXT, ok INTEGER, elapsed_ms INTEGER, carrier_id TEXT);
                         CREATE TABLE IF NOT EXISTS history_alarms(id INTEGER PRIMARY KEY AUTOINCREMENT, time TEXT, unit_id TEXT, alarm_id INTEGER, text TEXT, action TEXT);
                         CREATE TABLE IF NOT EXISTS history_failed(id INTEGER PRIMARY KEY AUTOINCREMENT, time TEXT, source TEXT, cmd TEXT, carrier_id TEXT, loc TEXT);
+                        CREATE TABLE IF NOT EXISTS cell_locks(
+                            cell_key TEXT PRIMARY KEY, plc INTEGER, station INTEGER, locked INTEGER DEFAULT 0,
+                            source TEXT DEFAULT '', lock_guid TEXT DEFAULT '', locked_at TEXT DEFAULT '',
+                            agent_time TEXT DEFAULT '', updated_at TEXT DEFAULT '');
+                        CREATE TABLE IF NOT EXISTS cell_lock_events(
+                            id INTEGER PRIMARY KEY AUTOINCREMENT, time TEXT, guid TEXT, plc INTEGER, station INTEGER,
+                            action TEXT, result TEXT, message TEXT, cmd_seq INTEGER DEFAULT 0, agent_time TEXT DEFAULT '');
                         """;
                     cmd.ExecuteNonQuery();
                 }
@@ -632,6 +751,17 @@ public sealed class Inventory : IDisposable
                     cmd.CommandText = "SELECT alarm_id, unit_id, text FROM alarms";
                     using var r = cmd.ExecuteReader();
                     while (r.Read()) _alarms.Add(new AlarmStatus(DStr(r, 1), (uint)r.GetInt64(0), DStr(r, 2)));
+                }
+                using (var cmd = conn.CreateCommand())
+                {
+                    cmd.CommandText = "SELECT plc, station, locked, source, lock_guid, locked_at, agent_time, updated_at FROM cell_locks";
+                    using var r = cmd.ExecuteReader();
+                    while (r.Read())
+                    {
+                        var row = new CellLockRow(r.GetInt32(0), r.GetInt32(1), r.GetInt32(2) == 1,
+                            DStr(r, 3), DStr(r, 4), ParseTime(DStr(r, 5)), ParseTime(DStr(r, 6)), ParseTime(DStr(r, 7)));
+                        _cellLocks[Key(row.PlcIndex, row.Station)] = row;
+                    }
                 }
                 using (var cmd = conn.CreateCommand())
                 {

@@ -1443,7 +1443,8 @@ public sealed class ScenarioTests : IAsyncLifetime
     public async Task Scenario38_AgvcPushStatus_OnStationChanges()
     {
         // 变化即推：204/203/201/501/302/301 事件触发 pushDeviceStatusInfo（单站口一条）；
-        // service=34~49 原始寄存器值、present=状态区 1/5、trayId 有货时取事件/台账/快照、无货恒空、input/outputRequest 恒 0
+        // service=AGVC 口径（1=在线/0=停服，由 34~49 原始值取反，2026-08-28 现场联调确认 AGVC 解析与 PLC 语义相反）、
+        // present=状态区 1/5、trayId 有货时取事件/台账/快照、无货恒空、input/outputRequest 恒 0
         using var plc = new PlcSim(index: 1);
         int plcPort = plc.Start();
         using var agvc = new FakeAgvcServer();
@@ -1467,14 +1468,14 @@ public sealed class ScenarioTests : IAsyncLifetime
             mcs.Connect("127.0.0.1", 5034);
             await mcs.EstablishAsync();
 
-            // 1) 人工放入 0→5 → 等 ID（载具确认机制：不立即报 201）→ 推 (service=0, present=1, trayId="")
+            // 1) 人工放入 0→5 → 等 ID（载具确认机制：不立即报 201）→ 推 (service=1, present=1, trayId="")
             plc.SetStationState(1, 5);
             Assert.Null(await mcs.WaitForEventAsync(201, 500));
             // 2) 扫码补 ID → 501 + 201 → 推 trayId=SCANP1
             plc.TriggerScan(1, "SCANP1");
             Assert.NotNull(await mcs.WaitForEventAsync(501));
             Assert.NotNull(await mcs.WaitForEventAsync(201));
-            // 3) 控制状态变化（34~49）→ 302 → 推 service=1（原始寄存器值）
+            // 3) 控制状态变化（34~49）→ 302 → 推 service=0（AGVC 口径取反：停服）
             plc.SetStationAvail(1, 1);
             Assert.NotNull(await mcs.WaitForEventAsync(302));
             // 4) 人工取走 5→0 → 202 → 推 present=0（无货 trayId 恒空）
@@ -1494,10 +1495,10 @@ public sealed class ScenarioTests : IAsyncLifetime
                 var st = d.RootElement.GetProperty("status")[0];
                 return (st.GetProperty("service").GetString()!, st.GetProperty("present").GetString()!, st.GetProperty("trayId").GetString()!);
             }).ToList();
-            Assert.Contains(("0", "1", ""), sigs);           // 0→5 入货（ID 后写，此刻空）
-            Assert.Contains(("0", "1", "SCANP1"), sigs);     // 扫码补 ID
-            Assert.Contains(("1", "1", "SCANP1"), sigs);     // 控制状态=1（原始寄存器值）
-            Assert.Contains(("1", "0", ""), sigs);           // 取走（无货 trayId 恒空）
+            Assert.Contains(("1", "1", ""), sigs);           // 0→5 入货（ID 后写，此刻空；在服→service=1）
+            Assert.Contains(("1", "1", "SCANP1"), sigs);     // 扫码补 ID（在服）
+            Assert.Contains(("0", "1", "SCANP1"), sigs);     // 停服→service=0（AGVC 口径取反）
+            Assert.Contains(("0", "0", ""), sigs);           // 取走（停服；无货 trayId 恒空）
 
             // reqCode：每次请求随机值、长度≤32 且互不相同（现场要求 2026-08-17）
             var reqCodes = pushes.Select(p =>
@@ -1605,7 +1606,7 @@ public sealed class ScenarioTests : IAsyncLifetime
             Assert.Equal("AGV001", plc.GetCarrierId(1));
             Assert.Contains(svc.Carriers, c => c.CarrierLoc == "BUFFER01_01" && c.CarrierId == "AGV001");
 
-            // 手动 pushDeviceStatusInfo（字段留空按实况推导：service=34~49 原始值 0、present=有货 1）
+            // 手动 pushDeviceStatusInfo（字段留空按实况推导：service=AGVC 口径在服=1、present=有货 1）
             var r2 = await http.PostAsJsonAsync("/api/agvc/manual/pushDeviceStatusInfo", new { cmsIndex = "10001" });
             Assert.True(r2.IsSuccessStatusCode);
             Assert.Contains("\"ok\":true", await r2.Content.ReadAsStringAsync());

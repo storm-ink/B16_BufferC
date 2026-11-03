@@ -88,6 +88,32 @@ public sealed class PlcPoller
             _cfg.ByteOrder);
     }
 
+    /// <summary>读 341~356 加锁状态（逻辑索引）：V9 新增区；V8 PLC 未映射时读异常，
+    /// 只清零本区、不影响状态/回显/扫码等主轮询（读失败首次 WARN，后续 Debug 防刷屏）</summary>
+    private bool _lockReadWarned;
+    private void ReadStationLocks()
+    {
+        try
+        {
+            var regs = _client.ReadHoldingRegisters(RegisterMap.RegStationLock, RegisterMap.StationsPerPlc);
+            for (int l = 1; l <= _snap.StationCount; l++)
+                _snap.StationLock[l - 1] = regs[StationMap.PhysicalOf(l, _snap.StationCount) - 1];
+            // 8 站机台 9~16 槽不映射（防陈旧残留；与回显区同口径）
+            Array.Clear(_snap.StationLock, _snap.StationCount, _snap.StationLock.Length - _snap.StationCount);
+            _snap.StationLockValid = true;
+            _lockReadWarned = false;
+        }
+        catch (Exception e) when (e is ModbusException or IOException)
+        {
+            Array.Clear(_snap.StationLock, 0, _snap.StationLock.Length);
+            _snap.StationLockValid = false;
+            _sink.Log($"PLC{_cfg.Index}",
+                $"站口锁状态区 341~356 读取失败（PLC 未实现 V9？锁功能不可用）: {e.Message}",
+                _lockReadWarned ? LogLevel.Debug : LogLevel.Warn);
+            _lockReadWarned = true;
+        }
+    }
+
     public async Task RunAsync(CancellationToken ct)
     {
         var backoffMs = 1000;
@@ -163,6 +189,8 @@ public sealed class PlcPoller
         _snap.ScanStation = fastRegs[RegisterMap.RegScanStation - RegisterMap.RegEchoNo];
         _snap.ScanCode = RegisterMap.UnpackAscii(fastRegs[(RegisterMap.RegScanCode - RegisterMap.RegEchoNo)..(RegisterMap.RegScanCode - RegisterMap.RegEchoNo + 16)], _cfg.ByteOrder);
         _snap.Handshake = fastRegs[RegisterMap.RegHandshake - RegisterMap.RegEchoNo];
+        // 341~356（V9）：独立短读 + 独立容错——V8 PLC 对未定义区读异常不得拖垮整轮轮询（否则断线重连）
+        ReadStationLocks();
 
         // 2. 站口状态变化 → 按站口读货物ID（每站 16 寄存器；FC03 单次上限 125）
         var curStates = _snap.StationState;

@@ -17,6 +17,7 @@
   "logRetentionDays": 7,
   "auditFile": "bufferc.audit.log",
   "reconcileStrict": false,
+  "cellLockTimeoutMinutes": 30,
   "dbPath": "bufferc-mcs2.db",
   "webPort": 7001
 }

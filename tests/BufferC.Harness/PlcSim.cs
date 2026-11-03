@@ -85,6 +85,10 @@ public sealed class PlcSim : IDisposable
         SetReg(RegisterMap.RegStationAlarm + PhysOf(station) - 1, alarm);
     public void SetStationAvail(int station, ushort avail) =>
         SetReg(RegisterMap.RegStationAvail + PhysOf(station) - 1, avail);
+    /// <summary>341~356 加锁状态（逻辑号；V9）</summary>
+    public void SetStationLock(int station, ushort locked) =>
+        SetReg(RegisterMap.RegStationLock + PhysOf(station) - 1, locked);
+    public ushort GetStationLock(int station) => GetReg(RegisterMap.RegStationLock + PhysOf(station) - 1);
     public void SetCarrierId(int station, string id)
     {
         int phys = PhysOf(station);
@@ -259,6 +263,10 @@ public sealed class PlcSim : IDisposable
                            _regs, RegisterMap.RegCarrierId + (st - 1) * 16, 16);
             else if (cmd == RegisterMap.CmdClear)
                 Array.Clear(_regs, RegisterMap.RegCarrierId + (st - 1) * 16, 16);
+            else if (cmd == RegisterMap.CmdLock)      // V9：加锁 → 341+(物理槽-1)=1
+                _regs[RegisterMap.RegStationLock + st - 1] = 1;
+            else if (cmd == RegisterMap.CmdUnlock)    // V9：解锁 → 清 0
+                _regs[RegisterMap.RegStationLock + st - 1] = 0;
         }
     }
 

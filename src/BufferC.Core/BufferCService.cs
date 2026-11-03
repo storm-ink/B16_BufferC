@@ -23,6 +23,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
     private readonly CancellationTokenSource _cts = new();
     private HsmsServer? _hsms;
     private AgvcClient? _agvc;                              // 出站 AGVC 客户端（baseUrl 空=不启用）
+    private readonly CellLockManager _cellLocks;            // AGV 货格加解锁（V9；PLC 341~356 为权威）
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _agvcArrivalTimers = new();
     private readonly SemaphoreSlim[] _cmdSignals;   // D2：每 PLC 命令入队信号（替代 200ms 忙轮询；长度=配置 PLC 台数）
     private readonly object _alarmSendLock = new();   // 告警组三帧连发（S5F1+102+402 / S5F1+101+401）组间互不交错（现场要求 2026-08-17）
@@ -37,6 +38,15 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
         _inv = new Inventory(cfg.DbPath, cfg.Plcs.Count, Log, cfg.HistoryRetentionRows,
             (p, s) => _engine.Unit(p, s), cfg.Plcs.Select(p => p.Stations).ToList());       // 站口主表：每台按 stations 建行；日志收编入统一管道
         _minLevel = Enum.TryParse<LogLevel>(cfg.LogLevel, true, out var lv) ? lv : LogLevel.Info;
+        // 货格加解锁（V9）：时钟晚绑定（() => Clock()），测试可 Start 后拨时间驱动超时路径
+        _cellLocks = new CellLockManager(cfg, _inv, FindPoller,
+            s => { bool ok = TryParseCmsIndex(s, out int p, out int st); return (ok, p, st); },
+            () => Clock(), Log, Audit,
+            (t, src, plc, st, cmd, ok, ms) =>
+            {
+                _cmds.Add(new CmdEntry(t, src, st, cmd, ok, ms, ""));
+                _inv.AddCommandHistory(t, src, plc, st, cmd, ok, ms, "");
+            });
     }
 
     /// <summary>全部 PLC 已完成首次轮询（基线就绪，测试/联调用）</summary>
@@ -89,6 +99,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
             // 第二期异步命令：每台 PLC 一个工作线程（互不阻塞；单命令挂起只影响本机台）
             _ = Task.Run(() => CommandWorkerLoopAsync(plc.Index, _cts.Token));
         }
+        _ = Task.Run(() => _cellLocks.TimeoutLoopAsync(_cts.Token));   // 货格锁超时兜底（仅 WARN+审计）
 
         // 重启恢复（未完成命令标记失败）
         RecoverStaleCommands();
@@ -332,6 +343,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
     {
         for (int i = 0; i < snap.StationCount; i++)
             _inv.UpdateStationState(snap.PlcIndex, i + 1, snap.StationState[i], snap.StationAlarm[i], snap.StationAvail[i], snap.CarrierId[i]);
+        _cellLocks.OnSnapshot(snap);   // 341~356 漂移对账（PLC 权威；读失败时内部跳过）
         // 载具确认机制（2026-08-19）：中间态站口状态离开有货态 → 撤销 pending（含重启后首轮校验）
         foreach (var r in _inv.PendingCarrierRows.Where(r => r.PlcIndex == snap.PlcIndex))
         {
@@ -382,6 +394,17 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
         bool ok = ManualInstall(carrierId, _engine.Loc(plcIndex, station), source);
         return ok ? (true, "已补填并写 PLC，等待命令执行完成") : (false, "写入失败");
     }
+
+    // ---------- AGV 货格加解锁（POST /api/agv/cellLock；GET /api/agv/locks） ----------
+    /// <summary>AGV 加解锁请求（原始 JSON；恒返回 code/message，解析失败也走 code=1）</summary>
+    public CellLockManager.CellLockResult HandleCellLock(string body) => _cellLocks.Process(body);
+
+    /// <summary>全部站口锁状态 + 最近 100 条流水（联调/运维查询）</summary>
+    public (IReadOnlyList<CellLockManager.CellLockView> Locks, IReadOnlyList<CellLockManager.CellLockEventView> Recent) GetCellLocks()
+        => _cellLocks.GetLocks();
+
+    /// <summary>超时扫描（测试确定性触发；运行期由后台 5s 循环调用）</summary>
+    public void CheckCellLockTimeouts() => _cellLocks.CheckTimeouts();
 
     private static string DescribeEvent(PlcEvent ev)
     {
@@ -890,7 +913,7 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
         }, cts.Token);
     }
 
-    /// <summary>推该站口当前状态给 AGVC（变化即推：service=34~49 原始寄存器值、present=状态区 1/5、trayId 优先事件已知 ID 其次快照）；离线不推（快照陈旧）</summary>
+    /// <summary>推该站口当前状态给 AGVC（变化即推：service=AGVC 口径 1=在线/0=停服（由 PLC 34~49 原始值取反，2026-08-28 现场联调确认 AGVC 解析与 PLC 语义相反）、present=状态区 1/5、trayId 优先事件已知 ID 其次快照）；离线不推（快照陈旧）</summary>
     private void PushStationStatus(int plcIndex, int station, string? knownId = null)
     {
         if (_agvc == null) return;
@@ -899,7 +922,9 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
         if (poller == null || snap == null || !poller.IsConnected) return;
         bool present = snap.StationState[station - 1] is RegisterMap.StHasCarrier or RegisterMap.StManualCarrier;
         ushort avail = snap.StationAvail[station - 1];
-        _ = Task.Run(() => _agvc!.PushStatusAsync(plcIndex, station, avail, present,
+        // AGVC 实际解析与 PLC 语义相反（在服发 0 被 AGVC 显示为停服）→ 发送前取反：1=在线/0=停服
+        ushort serviceOut = avail == 0 ? (ushort)1 : (ushort)0;
+        _ = Task.Run(() => _agvc!.PushStatusAsync(plcIndex, station, serviceOut, present,
             DeriveTrayId(plcIndex, station, present, knownId), _cts.Token));
     }
 
@@ -930,7 +955,9 @@ public sealed class BufferCService : IStatusProvider, IEventSink, IDisposable
         var poller = FindPoller(plc);
         var snap = poller?.Snapshot;
         if (poller == null || snap == null || !poller.IsConnected) return (false, $"PLC{plc} 未配置或未连接");
-        ushort avail = ushort.TryParse(service, out var av) ? av : snap.StationAvail[st - 1];
+        // 显式填写的 service 按 AGVC 口径透传（1=在线/0=停服）；留空按实况推导——推导值取反（AGVC 解析与 PLC 语义相反，2026-08-28 现场联调确认）
+        ushort avail = ushort.TryParse(service, out var av) ? av
+            : snap.StationAvail[st - 1] == 0 ? (ushort)1 : (ushort)0;
         bool pres = present == "1" || (present != "0"
             && snap.StationState[st - 1] is RegisterMap.StHasCarrier or RegisterMap.StManualCarrier);
         string tid = trayId ?? DeriveTrayId(plc, st, pres);

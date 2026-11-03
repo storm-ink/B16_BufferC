@@ -47,6 +47,7 @@ cat > publish/linux-x64/config.json <<'JSONEOF'
   "logRetentionDays": 7,
   "auditFile": "bufferc.audit.log",
   "reconcileStrict": false,
+  "cellLockTimeoutMinutes": 30,
   "dbPath": "bufferc.db",
   "webPort": 7001
 }

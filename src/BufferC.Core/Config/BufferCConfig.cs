@@ -25,6 +25,7 @@ public sealed class BufferCConfig
     public string LogLevel { get; set; } = "info";         // error|warn|info|debug|trace（启动最小级别；联调可 /api/debug 运行时切换）
     public bool LogModbusFrames { get; set; }              // Modbus TX/RX 帧日志（trace 级，默认关；联调开）
     public bool ReconcileStrict { get; set; }              // 对账严格模式：true=InventoryDataSend 时删除 MCS 未包含的本地条目；false=只记差异（默认保守）
+    public int CellLockTimeoutMinutes { get; set; } = 30;  // AGV 货格锁超时自动解锁（分钟；0=关闭）；仅 WARN+审计，不发告警
     public AgvcConfig Agvc { get; set; } = new();          // AGVC HTTP 集成（baseUrl 空=出站调用禁用）
 
     public static BufferCConfig Load(string path)
@@ -75,6 +76,8 @@ public sealed class BufferCConfig
         if (cfg.Agvc.TimeoutSec is < 1 or > 60) errors.Add($"agvc.timeoutSec {cfg.Agvc.TimeoutSec} 非法（允许 1~60）");
         if (cfg.Agvc.RetryCount is < 0 or > 10) errors.Add($"agvc.retryCount {cfg.Agvc.RetryCount} 非法（允许 0~10）");
         if (cfg.Agvc.ArrivalGraceMs is < 0 or > 60_000) errors.Add($"agvc.arrivalGraceMs {cfg.Agvc.ArrivalGraceMs} 非法（允许 0~60000）");
+        if (cfg.CellLockTimeoutMinutes is < 0 or > 1440)
+            errors.Add($"cellLockTimeoutMinutes {cfg.CellLockTimeoutMinutes} 非法（允许 0~1440，0=关闭超时自动解锁）");
         if (!string.IsNullOrWhiteSpace(cfg.Agvc.BaseUrl)
             && (!Uri.TryCreate(cfg.Agvc.BaseUrl, UriKind.Absolute, out var agvcUri)
                 || agvcUri.Scheme is not ("http" or "https")))

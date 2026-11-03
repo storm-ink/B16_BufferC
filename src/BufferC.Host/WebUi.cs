@@ -1,3 +1,4 @@
+using System.Text;
 using BufferC.Core;
 using BufferC.Core.Core;
 using BufferC.Core.Modbus;
@@ -63,6 +64,28 @@ public static class WebUi
         {
             var (ok, msg) = await service.ManualPushStatus(req.CmsIndex, req.Service, req.Present, req.TrayId);
             return Results.Json(new { ok, message = msg });
+        });
+        // AGV 货格加解锁（V9）：恒 HTTP 200，业务结果看 code；body 手动解析（坏 JSON 也要 code=1，
+        // 交给模型绑定会被框架直接 400）；Kestrel AllowSynchronousIO=false → 必须异步读
+        app.MapPost("/api/agv/cellLock", async Task<IResult> (HttpContext ctx) =>
+        {
+            string body;
+            try
+            {
+                using var sr = new StreamReader(ctx.Request.Body, Encoding.UTF8);
+                body = await sr.ReadToEndAsync();   // net6 无 CancellationToken 重载
+            }
+            catch (Exception)
+            {
+                return Results.Json(new { code = "1", message = "参数错误：JSON 格式错误" });
+            }
+            var r = service.HandleCellLock(body);
+            return Results.Json(new { code = r.Code, message = r.Message });
+        });
+        app.MapGet("/api/agv/locks", (HttpContext ctx) =>
+        {
+            var (locks, recent) = service.GetCellLocks();
+            return Json(ctx, new { locks, recent });
         });
         app.MapGet("/api/logs", (HttpContext ctx, int? tail, string? category, string? level) =>
         {
